@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Grafix</title>
+    <link rel="icon" type="image/svg+xml" href="/brand/logo/mark-gradient.svg" />
+  </head>
+  <body>
+    <div class="stage">
+      <div class="kv" aria-hidden="true"></div>
+      <div class="kv-veil" aria-hidden="true"></div>
+
+      <header class="hero">
+        <img
+          class="brand-logo"
+          src="/brand/logo/logoblock-h-white.svg"
+          alt="Grafix"
+          width="280"
+          height="64"
+        />
+        <p class="brand-line">Всё связано</p>
+        <div class="hero-cta">
+          <a class="btn primary" href="#workspace">
+            <img src="/brand/icons/eye-white.svg" alt="" class="btn-ico" />
+            Открыть рабочую область
+          </a>
+        </div>
+      </header>
+
+      <main id="workspace" class="workspace">
+        <section class="panel panel-input">
+          <h2>
+            <img src="/brand/icons/cloud-gradient.svg" alt="" class="sec-ico" />
+            Текст
+          </h2>
+          <label class="engine-pick">
+            <span>Модель</span>
+            <select id="engine-select">
+              <option value="gemma" selected>Gemma</option>
+              <option value="microgpt">MicroGPT</option>
+              <option value="auto">Авто</option>
+            </select>
+          </label>
+          <div
+            id="drop-zone"
+            class="drop-zone"
+            tabindex="0"
+            aria-label="Загрузить документ в промпт"
+          >
+            <textarea id="text-input" rows="7" placeholder="Вставьте текст для анализа или перетащите файл…"></textarea>
+            <div class="drop-overlay" aria-hidden="true">Отпустите файл сюда</div>
+          </div>
+          <div class="text-actions">
+            <label class="btn file-btn">
+              <input
+                id="file-input"
+                type="file"
+                accept=".txt,.docx,.doc,.rtf,.pdf,text/plain,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/rtf,text/rtf"
+                hidden
+              />
+              Загрузить файл
+            </label>
+            <label class="opt-chip" for="file-append">
+              <input id="file-append" type="checkbox" />
+              <span class="opt-box" aria-hidden="true"></span>
+              <span class="opt-label">Добавить поверх</span>
+            </label>
+            <span id="file-meta" class="meta file-meta"></span>
+          </div>
+          <button type="button" id="btn-analyze" class="btn primary">
+            <span class="btn-spinner" aria-hidden="true"></span>
+            <img src="/brand/icons/eye-white.svg" alt="" class="btn-ico" />
+            <span class="btn-label">Анализировать</span>
+          </button>
+          <button type="button" id="btn-debug" class="btn">Debug-лог</button>
+          <p id="extract-meta" class="meta"></p>
+
+          <h2>
+            <img src="/brand/icons/chat-gradient.svg" alt="" class="sec-ico" />
+            Вопрос
+          </h2>
+          <input id="question-input" type="text" placeholder="кто связан с Маша?" />
+          <label class="opt-chip" for="ask-web-search">
+            <input id="ask-web-search" type="checkbox" />
+            <span class="opt-box" aria-hidden="true"></span>
+            <span class="opt-label">Искать в интернете</span>
+          </label>
+          <button type="button" id="btn-ask" class="btn">
+            <img src="/brand/icons/chat-white.svg" alt="" class="btn-ico" />
+            Спросить
+          </button>
+          <pre id="answer" class="answer"></pre>
+          <ul id="ask-web-sources" class="web-sources" hidden></ul>
+
+          <h2>
+            <img src="/brand/icons/check-gradient.svg" alt="" class="sec-ico" />
+            Правка
+          </h2>
+          <div class="edit-form">
+            <label class="edit-field">
+              <span>Субъект</span>
+              <input id="edit-s" type="text" placeholder="например: Эльвира Ковач" autocomplete="off" />
+            </label>
+            <label class="edit-field">
+              <span>Связь</span>
+              <input id="edit-r" type="text" placeholder="например: основал" autocomplete="off" />
+            </label>
+            <label class="edit-field">
+              <span>Объект</span>
+              <input id="edit-o" type="text" placeholder="например: Северный меридиан" autocomplete="off" />
+            </label>
+            <button type="button" id="btn-add" class="btn edit-submit">
+              <img src="/brand/icons/link-white.svg" alt="" class="btn-ico" />
+              Добавить связь
+            </button>
+          </div>
+        </section>
+
+        <section class="panel panel-graph">
+          <div class="graph-header">
+            <h2>
+              <img src="/brand/icons/link-gradient.svg" alt="" class="sec-ico" />
+              Граф
+            </h2>
+            <div class="graph-header-actions">
+              <button type="button" id="btn-save-graph" class="btn" title="Сохранить текущий граф">
+                Сохранить
+              </button>
+              <span id="doc-id" class="meta"></span>
+            </div>
+          </div>
+
+          <details id="history-panel" class="history-panel" open>
+            <summary class="history-summary">
+              <span>История</span>
+              <span id="history-count" class="meta history-count"></span>
+            </summary>
+            <div class="history-body">
+              <div id="history-tabs" class="history-tabs" role="tablist" aria-label="Сохранённые графы"></div>
+              <p id="history-empty" class="meta history-empty">Пока пусто — проанализируйте текст или нажмите «Сохранить».</p>
+            </div>
+          </details>
+
+          <div id="graph"></div>
+          <div class="side-split">
+            <div>
+              <h3>
+                <img src="/brand/icons/person-gradient.svg" alt="" class="sec-ico sm" />
+                Юниты
+              </h3>
+              <ul id="unit-list" class="unit-list"></ul>
+            </div>
+            <div>
+              <h3>
+                <img src="/brand/icons/arrow-gradient.svg" alt="" class="sec-ico sm" />
+                Потерянные связи
+              </h3>
+              <ul id="lost-list" class="lost-list"></ul>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="foot">
+        <img
+          class="foot-cobrand"
+          src="/brand/logo/cobrand-stellar-white.svg"
+          alt="Grafix × Stellar"
+          height="36"
+        />
+        <span class="credit">by komandante_merk12</span>
+      </footer>
+    </div>
+
+    <div id="ctx-menu" class="ctx-menu" hidden>
+      <button type="button" id="ctx-about" class="ctx-item">О сущности</button>
+    </div>
+
+    <div id="entity-drawer" class="entity-drawer" hidden>
+      <div class="entity-panel">
+        <div class="entity-head">
+          <h2 id="entity-title">О сущности</h2>
+          <button type="button" id="btn-entity-close" class="btn">Закрыть</button>
+        </div>
+        <h3>Связи</h3>
+        <ul id="entity-relations" class="entity-relations"></ul>
+        <h3>Комментарий</h3>
+        <textarea
+          id="entity-comment"
+          rows="5"
+          placeholder="Напиши сам или нажми «Сгенерировать (Gemma)» — текст появится здесь…"
+        ></textarea>
+        <div class="entity-actions">
+          <button type="button" id="btn-entity-save" class="btn primary">Сохранить</button>
+          <button type="button" id="btn-entity-gemma" class="btn">
+            <span class="btn-spinner" aria-hidden="true"></span>
+            <span class="btn-label">Сгенерировать (Gemma)</span>
+          </button>
+        </div>
+        <label class="opt-chip entity-web-toggle" for="entity-web-search">
+          <input id="entity-web-search" type="checkbox" />
+          <span class="opt-box" aria-hidden="true"></span>
+          <span class="opt-label">Искать в интернете</span>
+        </label>
+        <ul id="entity-web-sources" class="web-sources" hidden></ul>
+        <p id="entity-meta" class="meta"></p>
+      </div>
+    </div>
+
+    <div id="debug-drawer" class="debug-drawer" hidden>
+      <div class="debug-panel">
+        <div class="debug-head">
+          <h2>Debug-лог нейронки</h2>
+          <button type="button" id="btn-debug-close" class="btn">Закрыть</button>
+        </div>
+        <h3>Промпт (user)</h3>
+        <pre id="debug-prompt" class="debug-pre"></pre>
+        <h3>Сырой ответ модели</h3>
+        <pre id="debug-raw" class="debug-pre"></pre>
+        <h3>Разобранные тройки / ответ</h3>
+        <pre id="debug-parsed" class="debug-pre"></pre>
+        <p id="debug-error" class="meta"></p>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
