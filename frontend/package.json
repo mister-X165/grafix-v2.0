@@ -9,6 +9,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "globe.gl": "^2.46.1",
+    "leaflet": "^1.9.4",
+    "three": "^0.185.1",
     "vis-network": "^9.1.9"
   },
   "devDependencies": {

@@ -76,6 +76,10 @@ class GraphHistory:
                 conn.execute(
                     "ALTER TABLE graphs ADD COLUMN comments_json TEXT NOT NULL DEFAULT '{}'"
                 )
+            if "markers_json" not in cols:
+                conn.execute(
+                    "ALTER TABLE graphs ADD COLUMN markers_json TEXT NOT NULL DEFAULT '[]'"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_graphs_updated ON graphs(updated_at DESC)"
             )
@@ -86,7 +90,7 @@ class GraphHistory:
             rows = conn.execute(
                 """
                 SELECT id, title, created_at, updated_at, document_id, text, engine, source,
-                       triples_json, nodes_json, edges_json, comments_json
+                       triples_json, nodes_json, edges_json, comments_json, markers_json
                 FROM graphs
                 ORDER BY updated_at DESC
                 LIMIT ?
@@ -118,29 +122,38 @@ class GraphHistory:
         title: str | None = None,
         graph_id: str | None = None,
         comments: dict[str, str] | None = None,
+        markers: list[dict] | None = None,
     ) -> dict[str, Any]:
         now = _utc_now()
         gid = graph_id or str(uuid.uuid4())
         resolved_title = (title or "").strip() or _title_from_text(text)
         comments_payload = comments if comments is not None else {}
+        markers_payload = markers if markers is not None else []
 
         with self._connect() as conn:
             existing = conn.execute(
-                "SELECT created_at, comments_json FROM graphs WHERE id = ?",
+                "SELECT created_at, comments_json, markers_json FROM graphs WHERE id = ?",
                 (gid,),
             ).fetchone()
             created = existing["created_at"] if existing else now
             if comments is None and existing is not None:
                 try:
                     comments_payload = json.loads(existing["comments_json"] or "{}")
-                except json.JSONDecodeError:
+                except (KeyError, json.JSONDecodeError, TypeError):
                     comments_payload = {}
+            if markers is None and existing is not None:
+                try:
+                    markers_payload = json.loads(existing["markers_json"] or "[]")
+                except (KeyError, json.JSONDecodeError, TypeError):
+                    markers_payload = []
+            if not isinstance(markers_payload, list):
+                markers_payload = []
             conn.execute(
                 """
                 INSERT INTO graphs (
                     id, title, created_at, updated_at, document_id, text, engine, source,
-                    triples_json, nodes_json, edges_json, comments_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    triples_json, nodes_json, edges_json, comments_json, markers_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     title = excluded.title,
                     updated_at = excluded.updated_at,
@@ -151,7 +164,8 @@ class GraphHistory:
                     triples_json = excluded.triples_json,
                     nodes_json = excluded.nodes_json,
                     edges_json = excluded.edges_json,
-                    comments_json = excluded.comments_json
+                    comments_json = excluded.comments_json,
+                    markers_json = excluded.markers_json
                 """,
                 (
                     gid,
@@ -166,6 +180,7 @@ class GraphHistory:
                     json.dumps(nodes, ensure_ascii=False),
                     json.dumps(edges, ensure_ascii=False),
                     json.dumps(comments_payload, ensure_ascii=False),
+                    json.dumps(markers_payload, ensure_ascii=False),
                 ),
             )
             conn.commit()
@@ -217,6 +232,12 @@ class GraphHistory:
             comments = {}
         if not isinstance(comments, dict):
             comments = {}
+        try:
+            markers = json.loads(row["markers_json"] or "[]")
+        except (KeyError, json.JSONDecodeError, TypeError):
+            markers = []
+        if not isinstance(markers, list):
+            markers = []
         summary.update(
             {
                 "text": row["text"],
@@ -224,6 +245,7 @@ class GraphHistory:
                 "nodes": json.loads(row["nodes_json"] or "[]"),
                 "edges": json.loads(row["edges_json"] or "[]"),
                 "comments": comments,
+                "markers": markers,
             }
         )
         return summary

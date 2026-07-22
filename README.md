@@ -1,13 +1,13 @@
 # Grafix
 
-Анализ текста → сущности и связи (**LM Studio / Gemma** основная, MicroGPT запасная) → граф Neo4j → **FastAPI** + **Vite**.
+Анализ текста → сущности и связи (**Gemma / LM Studio**, **DeepSeek 3.2 / OpenRouter**, MicroGPT) → граф Neo4j → **FastAPI** + **Vite**.
 
 Бренд-материалы: `media/` (гайдбук, логотипы, иконки, шрифты, key visual).  
 В UI подключены копии в `frontend/public/brand/`.
 
 ## Быстрый старт
 
-### 1) LM Studio (основная нейронка)
+### 1) LM Studio (Gemma)
 
 1. Открой LM Studio, загрузи **Gemma**.
 2. Включи **Local Server** (OpenAI-compatible), порт **1234**.
@@ -23,6 +23,29 @@ LM_STUDIO_MAX_TOKENS=500
 ```
 
 `LM_STUDIO_MODEL` пустой = берётся первая загруженная модель.
+
+### 2) DeepSeek 3.2 (OpenRouter)
+
+В UI выбери модель **DeepSeek 3.2**. Ключ — через окружение или файл `.env` в корне проекта:
+
+```
+OPENROUTER_API_KEY=sk-or-v1-...
+OPENROUTER_MODEL=deepseek/deepseek-v3.2
+OPENROUTER_MODEL_V4=deepseek/deepseek-v4-pro
+OPENROUTER_TIMEOUT=300
+OPENROUTER_MAX_TOKENS=4000
+OPENROUTER_EXTRACT_MAX_TOKENS=32000
+```
+
+В UI: **DeepSeek 3.2** (`deepseek/deepseek-v3.2`) и **DeepSeek V4 Pro** (`deepseek/deepseek-v4-pro`).
+
+Для обеих моделей включён **reasoning** (`OPENROUTER_REASONING=1`). Для QA effort по умолчанию `high`; для извлечения графа — `medium` (`OPENROUTER_EXTRACT_REASONING_EFFORT`), чтобы JSON не обрезался thinking’ом. Отключить: `OPENROUTER_REASONING=0`. Для V4 Pro можно `OPENROUTER_REASONING_EFFORT=xhigh`.
+
+Если в Debug снова «обрезан по max_tokens» — подними `OPENROUTER_EXTRACT_MAX_TOKENS` или поставь `OPENROUTER_EXTRACT_REASONING_EFFORT=low`.
+
+Проверка: `/api/health` → `openrouter.ready: true` и `has_api_key: true`.
+
+Модель по умолчанию: `deepseek/deepseek-v3.2` (OpenRouter).
 
 ### Backend (FastAPI)
 

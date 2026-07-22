@@ -69,17 +69,29 @@ class InMemoryGraphStore(GraphStore):
             s, r, o = t["subject"].strip(), t["relation"].strip(), t["object"].strip()
             if not s or not o:
                 continue
+            from model.triples import normalize_edge_kind
+
+            kind = normalize_edge_kind(t.get("kind"))
             nodes[s] = {"id": s, "label": s, "type": "Entity"}
             nodes[o] = {"id": o, "label": o, "type": "Entity"}
-            edges.append(
-                {
-                    "id": f"{s}|{r}|{o}",
-                    "source": s,
-                    "target": o,
-                    "label": r,
-                    "relation": r,
-                }
-            )
+            edge: dict[str, Any] = {
+                "id": f"{s}|{r}|{o}|{kind}",
+                "source": s,
+                "target": o,
+                "label": r,
+                "relation": r,
+                "kind": kind,
+            }
+            evidence = str(t.get("evidence") or "").strip()
+            if evidence:
+                edge["evidence"] = evidence
+            conf = t.get("confidence")
+            if conf is not None and conf != "":
+                try:
+                    edge["confidence"] = float(conf)
+                except (TypeError, ValueError):
+                    pass
+            edges.append(edge)
         self.documents[document_id] = {"text": text, "nodes": nodes, "edges": edges}
         return self.get_graph(document_id)
 
@@ -104,11 +116,12 @@ class InMemoryGraphStore(GraphStore):
         doc["nodes"][subject] = {"id": subject, "label": subject, "type": "Entity"}
         doc["nodes"][obj] = {"id": obj, "label": obj, "type": "Entity"}
         edge = {
-            "id": f"{subject}|{relation}|{obj}",
+            "id": f"{subject}|{relation}|{obj}|explicit",
             "source": subject,
             "target": obj,
             "label": relation,
             "relation": relation,
+            "kind": "explicit",
         }
         if edge not in doc["edges"] and not any(e["id"] == edge["id"] for e in doc["edges"]):
             doc["edges"].append(edge)
@@ -126,10 +139,20 @@ class InMemoryGraphStore(GraphStore):
         snap = self.get_graph(document_id)
         out = []
         for e in snap.edges:
-            if e["source"] == name:
-                out.append({"direction": "out", "relation": e["relation"], "neighbor": e["target"]})
-            elif e["target"] == name:
-                out.append({"direction": "in", "relation": e["relation"], "neighbor": e["source"]})
+            kind = e.get("kind") or "explicit"
+            item: dict[str, Any] = {
+                "direction": "out" if e["source"] == name else "in",
+                "relation": e["relation"],
+                "neighbor": e["target"] if e["source"] == name else e["source"],
+                "kind": kind,
+            }
+            if e["source"] != name and e["target"] != name:
+                continue
+            if e.get("evidence"):
+                item["evidence"] = e["evidence"]
+            if e.get("confidence") is not None:
+                item["confidence"] = e["confidence"]
+            out.append(item)
         return out
 
     def relations_of(self, name: str, document_id: str | None = None) -> list[dict]:
@@ -195,6 +218,9 @@ class Neo4jGraphStore(GraphStore):
                 s, r, o = t["subject"].strip(), t["relation"].strip(), t["object"].strip()
                 if not s or not o:
                     continue
+                from model.triples import normalize_edge_kind
+
+                kind = normalize_edge_kind(t.get("kind"))
                 # Dynamic relationship type: sanitize to Neo4j identifier
                 rel_type = _rel_type(r)
                 session.run(
@@ -205,12 +231,20 @@ class Neo4jGraphStore(GraphStore):
                     MERGE (d)-[:HAS_ENTITY]->(a)
                     MERGE (d)-[:HAS_ENTITY]->(b)
                     MERGE (a)-[rel:{rel_type}]->(b)
-                    SET rel.label = $r, rel.document_id = $doc
+                    SET rel.label = $r, rel.document_id = $doc, rel.kind = $kind,
+                        rel.evidence = $evidence, rel.confidence = $confidence
                     """,
                     doc=document_id,
                     s=s,
                     o=o,
                     r=r,
+                    kind=kind,
+                    evidence=str(t.get("evidence") or "").strip() or None,
+                    confidence=(
+                        float(t["confidence"])
+                        if t.get("confidence") is not None and t.get("confidence") != ""
+                        else None
+                    ),
                 )
         return self.get_graph(document_id)
 
@@ -223,7 +257,9 @@ class Neo4jGraphStore(GraphStore):
                     OPTIONAL MATCH (a)-[r]->(b:Entity)
                     WHERE exists((:Document {id: $doc})-[:HAS_ENTITY]->(b))
                       AND r.document_id = $doc
-                    RETURN a.name AS source, type(r) AS rel_type, r.label AS label, b.name AS target
+                    RETURN a.name AS source, type(r) AS rel_type, r.label AS label,
+                           r.kind AS kind, r.evidence AS evidence, r.confidence AS confidence,
+                           b.name AS target
                     """,
                     doc=document_id,
                 )
@@ -231,7 +267,9 @@ class Neo4jGraphStore(GraphStore):
                 result = session.run(
                     """
                     MATCH (a:Entity)-[r]->(b:Entity)
-                    RETURN a.name AS source, type(r) AS rel_type, r.label AS label, b.name AS target
+                    RETURN a.name AS source, type(r) AS rel_type, r.label AS label,
+                           r.kind AS kind, r.evidence AS evidence, r.confidence AS confidence,
+                           b.name AS target
                     """
                 )
             nodes: dict[str, dict] = {}
@@ -244,15 +282,22 @@ class Neo4jGraphStore(GraphStore):
                 if tgt:
                     nodes[tgt] = {"id": tgt, "label": tgt, "type": "Entity"}
                     label = record["label"] or record["rel_type"] or "RELATED"
-                    edges.append(
-                        {
-                            "id": f"{src}|{label}|{tgt}",
-                            "source": src,
-                            "target": tgt,
-                            "label": label,
-                            "relation": label,
-                        }
-                    )
+                    from model.triples import normalize_edge_kind
+
+                    kind = normalize_edge_kind(record["kind"])
+                    edge = {
+                        "id": f"{src}|{label}|{tgt}|{kind}",
+                        "source": src,
+                        "target": tgt,
+                        "label": label,
+                        "relation": label,
+                        "kind": kind,
+                    }
+                    if record.get("evidence"):
+                        edge["evidence"] = record["evidence"]
+                    if record.get("confidence") is not None:
+                        edge["confidence"] = record["confidence"]
+                    edges.append(edge)
             # Also include isolated entities linked to document
             if document_id:
                 ents = session.run(
@@ -282,7 +327,7 @@ class Neo4jGraphStore(GraphStore):
                 MERGE (d)-[:HAS_ENTITY]->(a)
                 MERGE (d)-[:HAS_ENTITY]->(b)
                 MERGE (a)-[rel:{rel_type}]->(b)
-                SET rel.label = $r, rel.document_id = $doc
+                SET rel.label = $r, rel.document_id = $doc, rel.kind = 'explicit'
                 """,
                 doc=document_id,
                 s=subject,
@@ -316,6 +361,7 @@ class Neo4jGraphStore(GraphStore):
                     MATCH (a:Entity {name: $name})-[r]-(b:Entity)
                     WHERE r.document_id = $doc OR r.document_id IS NULL
                     RETURN a.name AS a, b.name AS b, type(r) AS t, r.label AS label,
+                           r.kind AS kind, r.evidence AS evidence, r.confidence AS confidence,
                            startNode(r) = a AS outgoing
                     """,
                     name=name,
@@ -326,17 +372,28 @@ class Neo4jGraphStore(GraphStore):
                     """
                     MATCH (a:Entity {name: $name})-[r]-(b:Entity)
                     RETURN a.name AS a, b.name AS b, type(r) AS t, r.label AS label,
+                           r.kind AS kind, r.evidence AS evidence, r.confidence AS confidence,
                            startNode(r) = a AS outgoing
                     """,
                     name=name,
                 )
             out = []
+            from model.triples import normalize_edge_kind
+
             for rec in result:
                 rel = rec["label"] or rec["t"]
-                if rec["outgoing"]:
-                    out.append({"direction": "out", "relation": rel, "neighbor": rec["b"]})
-                else:
-                    out.append({"direction": "in", "relation": rel, "neighbor": rec["b"]})
+                kind = normalize_edge_kind(rec["kind"])
+                item = {
+                    "direction": "out" if rec["outgoing"] else "in",
+                    "relation": rel,
+                    "neighbor": rec["b"],
+                    "kind": kind,
+                }
+                if rec.get("evidence"):
+                    item["evidence"] = rec["evidence"]
+                if rec.get("confidence") is not None:
+                    item["confidence"] = rec["confidence"]
+                out.append(item)
             return out
 
     def relations_of(self, name: str, document_id: str | None = None) -> list[dict]:

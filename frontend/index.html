@@ -35,12 +35,25 @@
             Текст
           </h2>
           <label class="engine-pick">
-            <span>Модель</span>
+            <span>Модель анализа</span>
             <select id="engine-select">
-              <option value="gemma" selected>Gemma</option>
-              <option value="microgpt">MicroGPT</option>
-              <option value="auto">Авто</option>
+              <optgroup label="Локальные">
+                <option value="gemma" selected>Gemma</option>
+                <option value="microgpt">MicroGPT</option>
+              </optgroup>
+              <optgroup label="Сетевые">
+                <option value="deepseek">DeepSeek 3.2</option>
+                <option value="deepseek-v4">DeepSeek V4 Pro</option>
+              </optgroup>
+              <optgroup label="Смешанный">
+                <option value="auto">Авто</option>
+              </optgroup>
             </select>
+          </label>
+          <label class="opt-chip" for="reasoning-toggle" title="Thinking mode DeepSeek (3.2 / V4). Выключен — быстрее и стабильнее JSON">
+            <input id="reasoning-toggle" type="checkbox" />
+            <span class="opt-box" aria-hidden="true"></span>
+            <span class="opt-label">Reasoning</span>
           </label>
           <div
             id="drop-zone"
@@ -81,11 +94,25 @@
             Вопрос
           </h2>
           <input id="question-input" type="text" placeholder="кто связан с Маша?" />
-          <label class="opt-chip" for="ask-web-search">
-            <input id="ask-web-search" type="checkbox" />
-            <span class="opt-box" aria-hidden="true"></span>
-            <span class="opt-label">Искать в интернете</span>
-          </label>
+          <div class="qa-options">
+            <label class="engine-pick qa-engine-pick">
+              <span>Модель ответа</span>
+              <select id="qa-engine-select">
+                <optgroup label="Локальные">
+                  <option value="gemma" selected>Gemma</option>
+                </optgroup>
+                <optgroup label="Сетевые">
+                  <option value="deepseek">DeepSeek 3.2</option>
+                  <option value="deepseek-v4">DeepSeek V4 Pro</option>
+                </optgroup>
+              </select>
+            </label>
+            <label class="opt-chip" for="ask-web-search">
+              <input id="ask-web-search" type="checkbox" />
+              <span class="opt-box" aria-hidden="true"></span>
+              <span class="opt-label">Искать в интернете</span>
+            </label>
+          </div>
           <button type="button" id="btn-ask" class="btn">
             <img src="/brand/icons/chat-white.svg" alt="" class="btn-ico" />
             Спросить
@@ -97,23 +124,26 @@
             <img src="/brand/icons/check-gradient.svg" alt="" class="sec-ico" />
             Правка
           </h2>
-          <div class="edit-form">
-            <label class="edit-field">
-              <span>Субъект</span>
-              <input id="edit-s" type="text" placeholder="например: Эльвира Ковач" autocomplete="off" />
-            </label>
-            <label class="edit-field">
-              <span>Связь</span>
-              <input id="edit-r" type="text" placeholder="например: основал" autocomplete="off" />
-            </label>
-            <label class="edit-field">
-              <span>Объект</span>
-              <input id="edit-o" type="text" placeholder="например: Северный меридиан" autocomplete="off" />
-            </label>
-            <button type="button" id="btn-add" class="btn edit-submit">
-              <img src="/brand/icons/link-white.svg" alt="" class="btn-ico" />
-              Добавить связь
-            </button>
+          <div id="edit-form-home">
+            <div class="edit-form" id="edit-form">
+              <label class="edit-field">
+                <span>Субъект</span>
+                <input id="edit-s" type="text" placeholder="например: Эльвира Ковач" autocomplete="off" />
+              </label>
+              <label class="edit-field">
+                <span>Связь</span>
+                <input id="edit-r" type="text" placeholder="например: основал" autocomplete="off" />
+              </label>
+              <label class="edit-field">
+                <span>Объект</span>
+                <input id="edit-o" type="text" placeholder="например: Северный меридиан" autocomplete="off" />
+              </label>
+              <button type="button" id="btn-add" class="btn edit-submit">
+                <img src="/brand/icons/link-white.svg" alt="" class="btn-ico" />
+                Добавить связь
+              </button>
+              <p id="edit-meta" class="meta"></p>
+            </div>
           </div>
         </section>
 
@@ -124,25 +154,184 @@
               Граф
             </h2>
             <div class="graph-header-actions">
-              <button type="button" id="btn-save-graph" class="btn" title="Сохранить текущий граф">
-                Сохранить
-              </button>
               <span id="doc-id" class="meta"></span>
             </div>
           </div>
 
-          <details id="history-panel" class="history-panel" open>
-            <summary class="history-summary">
-              <span>История</span>
-              <span id="history-count" class="meta history-count"></span>
-            </summary>
-            <div class="history-body">
-              <div id="history-tabs" class="history-tabs" role="tablist" aria-label="Сохранённые графы"></div>
-              <p id="history-empty" class="meta history-empty">Пока пусто — проанализируйте текст или нажмите «Сохранить».</p>
+          <div id="graph-stage" class="graph-stage">
+            <div class="graph-stage-bar">
+              <div class="view-tabs" role="tablist" aria-label="Вид графа">
+                <button type="button" class="view-tab is-active" data-view="graph" id="tab-view-graph">Граф</button>
+                <button type="button" class="view-tab" data-view="map" id="tab-view-map">Карта</button>
+                <button type="button" class="view-tab" data-view="globe" id="tab-view-globe">Глобус</button>
+              </div>
+              <div class="graph-stage-bar-actions">
+                <label class="history-pick" for="history-select">
+                  <span>Граф</span>
+                  <select id="history-select" aria-label="Выбрать сохранённый граф">
+                    <option value="">— история —</option>
+                  </select>
+                </label>
+                <button type="button" id="btn-save-graph" class="btn" title="Сохранить текущий граф">
+                  Сохранить
+                </button>
+                <button type="button" id="btn-graph-fs" class="btn" title="Полноэкранный режим (Esc — выход)">
+                  На весь экран
+                </button>
+                <button
+                  type="button"
+                  id="btn-graph-fs-exit"
+                  class="btn"
+                  hidden
+                  title="Выйти из полноэкранного режима"
+                >
+                  Свернуть
+                </button>
+              </div>
             </div>
-          </details>
 
-          <div id="graph"></div>
+            <details id="history-panel" class="history-panel" open>
+              <summary class="history-summary">
+                <span>История</span>
+                <span id="history-count" class="meta history-count"></span>
+              </summary>
+              <div class="history-body">
+                <div id="history-tabs" class="history-tabs" role="tablist" aria-label="Сохранённые графы"></div>
+                <p id="history-empty" class="meta history-empty">Пока пусто — проанализируйте текст или нажмите «Сохранить».</p>
+              </div>
+            </details>
+
+            <div id="view-graph" class="geo-view is-active">
+              <div id="graph"></div>
+              <div id="edge-legend" class="edge-legend" hidden>
+                <span class="edge-leg edge-leg-explicit">явная</span>
+                <span class="edge-leg edge-leg-hidden">скрытая</span>
+                <span class="edge-leg edge-leg-false">ложная</span>
+              </div>
+            </div>
+
+            <div id="view-map" class="geo-view" hidden>
+              <div class="map-toolbar">
+                <label class="engine-pick map-entity-pick">
+                  <span>Сущность</span>
+                  <select id="map-entity-select"></select>
+                </label>
+                <label class="engine-pick map-search-pick">
+                  <span>Поиск на карте</span>
+                  <input
+                    id="map-search-input"
+                    type="search"
+                    placeholder="город, завод, адрес…"
+                    autocomplete="off"
+                  />
+                </label>
+                <label class="opt-chip" for="map-place-mode">
+                  <input id="map-place-mode" type="checkbox" checked />
+                  <span class="opt-box" aria-hidden="true"></span>
+                  <span class="opt-label">Клик = метка</span>
+                </label>
+                <label class="opt-chip" for="map-use-deepseek" title="DeepSeek подскажет запросы, OSM найдёт точку">
+                  <input id="map-use-deepseek" type="checkbox" checked />
+                  <span class="opt-box" aria-hidden="true"></span>
+                  <span class="opt-label">DeepSeek + карта</span>
+                </label>
+                <label class="opt-chip" for="map-geo-auto" title="При анализе DeepSeek сразу собрать места/события на карте">
+                  <input id="map-geo-auto" type="checkbox" checked />
+                  <span class="opt-box" aria-hidden="true"></span>
+                  <span class="opt-label">Географ при анализе</span>
+                </label>
+                <label class="opt-chip" for="map-show-links" title="Стрелки и подписи связей между метками на карте и глобусе">
+                  <input id="map-show-links" type="checkbox" checked />
+                  <span class="opt-box" aria-hidden="true"></span>
+                  <span class="opt-label">Связи на карте</span>
+                </label>
+                <label class="engine-pick map-geo-engine-pick">
+                  <span>Модель географа</span>
+                  <select id="map-geo-engine">
+                    <option value="deepseek-v4" selected>DeepSeek V4 Pro</option>
+                    <option value="deepseek">DeepSeek 3.2</option>
+                  </select>
+                </label>
+                <button type="button" id="btn-map-geocode" class="btn">Найти</button>
+                <button type="button" id="btn-map-geo-graph" class="btn primary" title="DeepSeek: места и события → карта и глобус">
+                  Собрать географ
+                </button>
+                <span id="map-meta" class="meta"></span>
+              </div>
+              <div id="leaflet-map" class="leaflet-map"></div>
+              <ul id="marker-list" class="marker-list"></ul>
+            </div>
+
+            <div id="view-globe" class="geo-view" hidden>
+              <div class="globe-toolbar">
+                <label class="opt-chip" for="globe-show-links" title="Дуги и подписи связей на глобусе">
+                  <input id="globe-show-links" type="checkbox" checked />
+                  <span class="opt-box" aria-hidden="true"></span>
+                  <span class="opt-label">Связи на глобусе</span>
+                </label>
+              </div>
+              <div id="globe-root" class="globe-root"></div>
+              <p id="globe-meta" class="meta globe-meta">Метки с карты появляются на глобусе</p>
+            </div>
+
+            <div id="fs-edit-dock" class="fs-edit-dock" hidden>
+              <div class="fs-edit-dock-head">
+                <strong>Правка графа</strong>
+                <span class="meta">ПКМ по узлу — меню · двойной клик — выкл. связь/узел</span>
+              </div>
+              <div id="fs-edit-slot" class="fs-edit-slot"></div>
+            </div>
+
+            <div id="ctx-menu" class="ctx-menu" hidden>
+              <button type="button" id="ctx-about" class="ctx-item">О сущности</button>
+              <button type="button" id="ctx-delete" class="ctx-item ctx-danger">Удалить узел</button>
+            </div>
+
+            <div id="entity-drawer" class="entity-drawer" hidden>
+              <div class="entity-panel">
+                <div class="entity-head">
+                  <h2 id="entity-title">О сущности</h2>
+                  <button type="button" id="btn-entity-close" class="btn">Закрыть</button>
+                </div>
+                <h3>Связи</h3>
+                <ul id="entity-relations" class="entity-relations"></ul>
+                <h3>Комментарий</h3>
+                <textarea
+                  id="entity-comment"
+                  rows="5"
+                  placeholder="Напиши сам или нажми «Сгенерировать» — текст появится здесь…"
+                ></textarea>
+                <div class="entity-actions">
+                  <button type="button" id="btn-entity-save" class="btn primary">Сохранить</button>
+                  <button type="button" id="btn-entity-gemma" class="btn">
+                    <span class="btn-spinner" aria-hidden="true"></span>
+                    <span class="btn-label">Сгенерировать (Gemma)</span>
+                  </button>
+                </div>
+                <div class="qa-options entity-qa-options">
+                  <label class="engine-pick qa-engine-pick">
+                    <span>Модель</span>
+                    <select id="entity-qa-engine-select">
+                      <optgroup label="Локальные">
+                        <option value="gemma" selected>Gemma</option>
+                      </optgroup>
+                      <optgroup label="Сетевые">
+                        <option value="deepseek">DeepSeek 3.2</option>
+                        <option value="deepseek-v4">DeepSeek V4 Pro</option>
+                      </optgroup>
+                    </select>
+                  </label>
+                  <label class="opt-chip entity-web-toggle" for="entity-web-search">
+                    <input id="entity-web-search" type="checkbox" />
+                    <span class="opt-box" aria-hidden="true"></span>
+                    <span class="opt-label">Искать в интернете</span>
+                  </label>
+                </div>
+                <ul id="entity-web-sources" class="web-sources" hidden></ul>
+                <p id="entity-meta" class="meta"></p>
+              </div>
+            </div>
+          </div>
           <div class="side-split">
             <div>
               <h3>
@@ -171,41 +360,6 @@
         />
         <span class="credit">by komandante_merk12</span>
       </footer>
-    </div>
-
-    <div id="ctx-menu" class="ctx-menu" hidden>
-      <button type="button" id="ctx-about" class="ctx-item">О сущности</button>
-    </div>
-
-    <div id="entity-drawer" class="entity-drawer" hidden>
-      <div class="entity-panel">
-        <div class="entity-head">
-          <h2 id="entity-title">О сущности</h2>
-          <button type="button" id="btn-entity-close" class="btn">Закрыть</button>
-        </div>
-        <h3>Связи</h3>
-        <ul id="entity-relations" class="entity-relations"></ul>
-        <h3>Комментарий</h3>
-        <textarea
-          id="entity-comment"
-          rows="5"
-          placeholder="Напиши сам или нажми «Сгенерировать (Gemma)» — текст появится здесь…"
-        ></textarea>
-        <div class="entity-actions">
-          <button type="button" id="btn-entity-save" class="btn primary">Сохранить</button>
-          <button type="button" id="btn-entity-gemma" class="btn">
-            <span class="btn-spinner" aria-hidden="true"></span>
-            <span class="btn-label">Сгенерировать (Gemma)</span>
-          </button>
-        </div>
-        <label class="opt-chip entity-web-toggle" for="entity-web-search">
-          <input id="entity-web-search" type="checkbox" />
-          <span class="opt-box" aria-hidden="true"></span>
-          <span class="opt-label">Искать в интернете</span>
-        </label>
-        <ul id="entity-web-sources" class="web-sources" hidden></ul>
-        <p id="entity-meta" class="meta"></p>
-      </div>
     </div>
 
     <div id="debug-drawer" class="debug-drawer" hidden>

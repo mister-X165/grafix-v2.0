@@ -15,6 +15,7 @@ from model.microgpt import MicroGPT
 from model.tokenizer import CharTokenizer
 from model.triples import Triple, encode_prompt, parse_triples_suffix, SEP
 from model.lmstudio import LMStudioExtractor
+from model.openrouter import OpenRouterExtractor
 
 
 DEFAULT_CKPT = ROOT / "model" / "checkpoints" / "extractor.json"
@@ -103,7 +104,16 @@ def repair_numeric_entities(triples: list[Triple], text: str) -> list[Triple]:
     for t in triples:
         s, o = fix(t.subject), fix(t.object)
         if s != t.subject or o != t.object:
-            out.append(Triple(subject=s, relation=t.relation, object=o))
+            out.append(
+                Triple(
+                    subject=s,
+                    relation=t.relation,
+                    object=o,
+                    kind=getattr(t, "kind", "explicit") or "explicit",
+                    evidence=getattr(t, "evidence", "") or "",
+                    confidence=getattr(t, "confidence", None),
+                )
+            )
         else:
             out.append(t)
     return out
@@ -460,19 +470,20 @@ def _few_shot_examples(limit: int = 4) -> list[dict]:
 
 
 class Extractor:
-    """Engine-selectable extractor: gemma (LM Studio) or microgpt."""
+    """Engine-selectable extractor: gemma / deepseek / microgpt / auto."""
 
     def __init__(self, checkpoint: Path | None = None, use_heuristic_fallback: bool = True):
         self.lm = LMStudioExtractor()
+        self.openrouter = OpenRouterExtractor()
         self.neural = MicroGPTExtractor(checkpoint)
         self.use_heuristic_fallback = use_heuristic_fallback
         self.relations = _load_relation_vocab()
         self.gold = _load_gold_datasets()
         self.few_shot = _few_shot_examples(4)
 
-    def extract(self, text: str, engine: str = "gemma") -> dict:
+    def extract(self, text: str, engine: str = "gemma", *, reasoning: bool | None = None) -> dict:
         engine = (engine or "gemma").strip().lower()
-        if engine not in {"gemma", "microgpt", "auto"}:
+        if engine not in {"gemma", "deepseek", "deepseek-v4", "microgpt", "auto"}:
             engine = "gemma"
 
         base = {
@@ -480,7 +491,120 @@ class Extractor:
             "lm_ready": False,
             "lm_model": None,
             "engine": engine,
+            "openrouter_ready": False,
+            "openrouter_model": None,
         }
+
+        if engine in {"deepseek", "deepseek-v4"}:
+            from model.openrouter import openrouter_for_engine
+
+            client = openrouter_for_engine(engine)
+            self.openrouter = client
+            client.refresh()
+            or_up = client.ready
+            base["openrouter_ready"] = or_up
+            base["openrouter_model"] = client.resolved_model if or_up else None
+            if not or_up:
+                return {
+                    **base,
+                    "triples": [],
+                    "source": "empty",
+                    "hint": (
+                        "Выбран DeepSeek, но нет ключа OpenRouter. "
+                        "Задай OPENROUTER_API_KEY в окружении (или .env) и перезапусти backend."
+                    ),
+                    "debug": {
+                        "raw_response": "",
+                        "parsed_json": [],
+                        "prompt_user": "",
+                        "error": "OPENROUTER_API_KEY missing",
+                        "model": None,
+                    },
+                }
+            dbg = client.extract_debug(text, few_shot=self.few_shot, reasoning=reasoning)
+            lm_triples = [
+                t for t in dbg["triples"] if _is_plausible_triple(t, require_vocab=False)
+            ]
+            lm_triples = repair_numeric_entities(lm_triples, text)
+            debug = {
+                "raw_response": dbg.get("raw_response") or "",
+                "parsed_json": dbg.get("parsed_json") or [],
+                "prompt_user": dbg.get("prompt_user") or "",
+                "error": dbg.get("error"),
+                "model": dbg.get("model"),
+                "reasoning": dbg.get("reasoning") or "",
+                "reasoning_effort": dbg.get("reasoning_effort"),
+                "reasoning_enabled": dbg.get("reasoning_enabled"),
+                "entities": dbg.get("entities") or [],
+                "contradictions": dbg.get("contradictions") or [],
+            }
+            if lm_triples:
+                triples_payload = [t.as_dict() for t in lm_triples]
+                comments_dbg = client.batch_entity_comments(
+                    text, lm_triples, reasoning=reasoning
+                )
+                comments = comments_dbg.get("comments") or {}
+                debug["comments_raw"] = comments_dbg.get("raw_response") or ""
+                debug["comments_error"] = comments_dbg.get("error")
+                debug["comments_missing"] = comments_dbg.get("missing") or []
+                debug["comments_prompt"] = comments_dbg.get("prompt_user") or ""
+                n_hidden = sum(1 for t in triples_payload if t.get("kind") == "hidden")
+                n_false = sum(1 for t in triples_payload if t.get("kind") == "false")
+                n_contra = len(debug.get("contradictions") or [])
+                n_distractors = sum(
+                    1 for e in (debug.get("entities") or []) if e.get("distractor")
+                )
+                hint = None
+                if comments_dbg.get("missing"):
+                    hint = (
+                        f"Граф готов; комментарии: {len(comments)}/"
+                        f"{len(comments_dbg.get('entities') or [])}. "
+                        "Часть сущностей без комментария — смотри Debug."
+                    )
+                elif comments:
+                    hint = f"DeepSeek: комментарии к {len(comments)} сущностям."
+                extras = []
+                if n_hidden or n_false:
+                    extras.append(f"скрытых: {n_hidden}, ложных: {n_false}")
+                if n_contra:
+                    extras.append(f"противоречий: {n_contra}")
+                if n_distractors:
+                    extras.append(f"дистракторов: {n_distractors}")
+                if extras:
+                    extra = " · ".join(extras)
+                    hint = f"{hint} · {extra}" if hint else extra
+                return {
+                    **base,
+                    "openrouter_ready": True,
+                    "openrouter_model": dbg.get("model") or client.resolved_model,
+                    "triples": triples_payload,
+                    "entities_meta": debug.get("entities") or [],
+                    "contradictions": debug.get("contradictions") or [],
+                    "comments": comments,
+                    "source": "openrouter",
+                    "hint": hint,
+                    "debug": debug,
+                }
+            if dbg.get("ok") or dbg.get("raw_response"):
+                return {
+                    **base,
+                    "openrouter_ready": True,
+                    "openrouter_model": dbg.get("model") or client.resolved_model,
+                    "triples": [],
+                    "source": "empty",
+                    "hint": (
+                        "DeepSeek ответил, но тройки не разобрались. "
+                        "Открой Debug-лог и посмотри сырой ответ."
+                    ),
+                    "debug": debug,
+                }
+            return {
+                **base,
+                "triples": [],
+                "source": "empty",
+                "hint": dbg.get("error") or "DeepSeek не ответил.",
+                "debug": debug,
+            }
 
         if engine in {"gemma", "auto"}:
             self.lm.refresh()
@@ -632,7 +756,7 @@ class Extractor:
             "source": "empty",
             "hint": (
                 "Не удалось извлечь связи выбранной моделью. "
-                "Проверь LM Studio (для Gemma) или чекпоинт MicroGPT."
+                "Проверь LM Studio (Gemma), OPENROUTER_API_KEY (DeepSeek) или чекпоинт MicroGPT."
             ),
             "debug": {
                 "raw_response": "",

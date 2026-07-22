@@ -40,8 +40,14 @@ def answer_question(
     document_text: str | None = None,
     prefer_gemma_for_text: bool = True,
     web_search: bool = False,
+    engine: str = "gemma",
+    reasoning: bool = False,
 ) -> dict[str, Any]:
     q = question.strip()
+    engine = (engine or "gemma").strip().lower()
+    if engine not in {"gemma", "deepseek", "deepseek-v4", "microgpt", "auto"}:
+        engine = "gemma"
+    text_engine = engine if engine in {"deepseek", "deepseek-v4"} else "gemma"
 
     if is_graph_question(q) and not web_search:
         result = _answer_graph(store, q, document_id)
@@ -50,11 +56,8 @@ def answer_question(
         result["web_results"] = []
         return result
 
-    # Free-text / about document → Gemma (optionally with web)
+    # Free-text / about document → Gemma or DeepSeek (optionally with web)
     if prefer_gemma_for_text:
-        from model.lmstudio import LMStudioExtractor
-
-        lm = LMStudioExtractor()
         web_payload: dict[str, Any] = {"results": [], "error": None, "query": q}
         if web_search:
             from graph.websearch import search_web
@@ -63,6 +66,13 @@ def answer_question(
 
         has_doc = bool((document_text or "").strip())
         has_web = bool(web_payload.get("results"))
+        qa_mode = (
+            "text_deepseek_v4"
+            if text_engine == "deepseek-v4"
+            else "text_deepseek"
+            if text_engine.startswith("deepseek")
+            else "text_gemma"
+        )
 
         if not has_doc and not has_web:
             return {
@@ -73,7 +83,7 @@ def answer_question(
                 "highlight_nodes": [],
                 "highlight_edges": [],
                 "action": None,
-                "qa_mode": "text_gemma",
+                "qa_mode": qa_mode,
                 "web_results": web_payload.get("results") or [],
                 "web_error": web_payload.get("error"),
                 "debug": {
@@ -81,26 +91,54 @@ def answer_question(
                     "error": web_payload.get("error") or "no document text",
                 },
             }
-        if not lm.ping():
-            return {
-                "answer": (
-                    "Вопрос похож на вопрос по тексту, но LM Studio выключен. "
-                    "Запусти Gemma-сервер или спроси по шаблону графа.\n\n" + GRAPH_HINT
-                ),
-                "highlight_nodes": [],
-                "highlight_edges": [],
-                "action": None,
-                "qa_mode": "text_gemma",
-                "web_results": web_payload.get("results") or [],
-                "web_error": web_payload.get("error"),
-                "debug": {"raw_response": "", "error": "LM Studio offline"},
-            }
 
-        # Graph-template question with web_search still goes to Gemma for richer answer
-        gem = lm.answer_about_text(
+        if text_engine in {"deepseek", "deepseek-v4"}:
+            from model.openrouter import openrouter_for_engine
+
+            client = openrouter_for_engine(text_engine)
+            if not client.ready:
+                return {
+                    "answer": (
+                        "Выбран DeepSeek, но нет OPENROUTER_API_KEY. "
+                        "Задай ключ в окружении или переключи модель на Gemma.\n\n" + GRAPH_HINT
+                    ),
+                    "highlight_nodes": [],
+                    "highlight_edges": [],
+                    "action": None,
+                    "qa_mode": qa_mode,
+                    "web_results": web_payload.get("results") or [],
+                    "web_error": web_payload.get("error"),
+                    "debug": {"raw_response": "", "error": "OPENROUTER_API_KEY missing"},
+                }
+        else:
+            from model.lmstudio import LMStudioExtractor
+
+            client = LMStudioExtractor()
+            if not client.ping():
+                return {
+                    "answer": (
+                        "Вопрос похож на вопрос по тексту, но LM Studio выключен. "
+                        "Запусти Gemma-сервер, переключись на DeepSeek (OpenRouter) "
+                        "или спроси по шаблону графа.\n\n" + GRAPH_HINT
+                    ),
+                    "highlight_nodes": [],
+                    "highlight_edges": [],
+                    "action": None,
+                    "qa_mode": qa_mode,
+                    "web_results": web_payload.get("results") or [],
+                    "web_error": web_payload.get("error"),
+                    "debug": {"raw_response": "", "error": "LM Studio offline"},
+                }
+
+        gem = client.answer_about_text(
             document_text or "",
             q,
             web_results=web_payload.get("results") if has_web else None,
+            **(
+                {"reasoning": bool(reasoning)}
+                if text_engine in {"deepseek", "deepseek-v4"}
+                else {}
+            ),
         )
         debug_err = gem.get("error")
         if web_payload.get("error"):
@@ -110,7 +148,7 @@ def answer_question(
             "highlight_nodes": [],
             "highlight_edges": [],
             "action": None,
-            "qa_mode": "text_gemma",
+            "qa_mode": qa_mode,
             "source": gem.get("source"),
             "lm_model": gem.get("model"),
             "web_results": web_payload.get("results") or [],

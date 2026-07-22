@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,28 @@ from pydantic import BaseModel, Field
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+def _load_dotenv() -> None:
+    """Load KEY=VALUE from .env without overwriting existing env vars."""
+    path = ROOT / ".env"
+    if not path.is_file():
+        return
+    try:
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = val
+    except OSError:
+        pass
+
+
+_load_dotenv()
 
 from graph.documents import ALLOWED_EXTENSIONS, DocumentExtractError, extract_text
 from graph.history import GraphHistory
@@ -41,12 +64,25 @@ extractor = Extractor()
 history = GraphHistory()
 DOC_TEXTS: dict[str, str] = {}
 DOC_COMMENTS: dict[str, dict[str, str]] = {}
+DOC_MARKERS: dict[str, list[dict[str, Any]]] = {}
 
 
 class AnalyzeBody(BaseModel):
     text: str
     document_id: str | None = None
-    engine: str = "gemma"  # gemma | microgpt | auto
+    engine: str = "gemma"  # gemma | deepseek | deepseek-v4 | microgpt | auto
+    geo_graph: bool = True  # места/события → карта и глобус (DeepSeek)
+    geo_engine: str = "deepseek-v4"  # deepseek | deepseek-v4
+    reasoning: bool = False  # DeepSeek thinking mode
+
+
+class GeoGraphBody(BaseModel):
+    document_id: str | None = None
+    document_text: str | None = None
+    triples: list[dict[str, Any]] | None = None
+    replace: bool = True  # заменить авто-метки; ручные сохранить
+    engine: str = "deepseek-v4"  # deepseek | deepseek-v4
+    reasoning: bool = False
 
 
 class AskBody(BaseModel):
@@ -54,6 +90,8 @@ class AskBody(BaseModel):
     document_id: str | None = None
     document_text: str | None = None
     web_search: bool = False
+    engine: str = "gemma"  # gemma | deepseek | deepseek-v4 | … (text QA)
+    reasoning: bool = False
 
 
 class ToggleBody(BaseModel):
@@ -82,10 +120,26 @@ class SaveGraphBody(BaseModel):
     title: str | None = None
     history_id: str | None = None
     comments: dict[str, str] | None = None
+    markers: list[dict[str, Any]] | None = None
 
 
 class RenameGraphBody(BaseModel):
     title: str
+
+
+class MarkersBody(BaseModel):
+    document_id: str | None = None
+    history_id: str | None = None
+    markers: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class LocateBody(BaseModel):
+    entity: str = ""
+    query: str = ""
+    document_id: str | None = None
+    document_text: str | None = None
+    use_deepseek: bool = True
+    limit: int = 5
 
 
 class EntityCommentBody(BaseModel):
@@ -102,6 +156,8 @@ class EntityGenerateBody(BaseModel):
     history_id: str | None = None
     save: bool = True
     web_search: bool = False
+    engine: str = "gemma"  # gemma | deepseek | deepseek-v4
+    reasoning: bool = False
 
 
 def _resolve_doc_id(document_id: str | None) -> str:
@@ -115,12 +171,86 @@ def _triples_from_edges(edges: list[dict[str, Any]]) -> list[dict[str, str]]:
         r = (e.get("relation") or e.get("label") or "").strip()
         o = (e.get("target") or "").strip()
         if s and o:
-            out.append({"subject": s, "relation": r, "object": o})
+            kind = str(e.get("kind") or "explicit").strip() or "explicit"
+            out.append({"subject": s, "relation": r, "object": o, "kind": kind})
     return out
 
 
 def _comments_for(doc_id: str) -> dict[str, str]:
     return DOC_COMMENTS.setdefault(doc_id, {})
+
+
+def _markers_for(doc_id: str) -> list[dict[str, Any]]:
+    return DOC_MARKERS.setdefault(doc_id, [])
+
+
+def _normalize_markers(raw: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            lat = float(item.get("lat"))
+            lng = float(item.get("lng"))
+        except (TypeError, ValueError):
+            continue
+        if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+            continue
+        entity = str(item.get("entity") or item.get("name") or "").strip()
+        mid = str(item.get("id") or "").strip() or f"{entity}:{lat:.5f}:{lng:.5f}"
+        if mid in seen:
+            continue
+        seen.add(mid)
+        note = str(item.get("note") or "").strip()
+        kind = str(item.get("kind") or "place").strip().lower()
+        if kind not in {"place", "event", "manual"}:
+            kind = "place"
+        out.append(
+            {
+                "id": mid,
+                "entity": entity or "Точка",
+                "lat": lat,
+                "lng": lng,
+                "note": note,
+                "kind": kind,
+                "auto": bool(item.get("auto")),
+            }
+        )
+    return out
+
+
+def _geo_links_from_markers_and_triples(
+    markers: list[dict[str, Any]],
+    triples: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    by_entity = {str(m.get("entity") or "").strip().lower(): m for m in markers if m.get("entity")}
+    links: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for t in triples or []:
+        s = str((t or {}).get("subject") or "").strip()
+        o = str((t or {}).get("object") or "").strip()
+        r = str((t or {}).get("relation") or "").strip() or "связан_с"
+        kind = str((t or {}).get("kind") or "explicit")
+        a = by_entity.get(s.lower())
+        b = by_entity.get(o.lower())
+        if not a or not b or a.get("id") == b.get("id"):
+            continue
+        key = (a["id"], b["id"], r)
+        if key in seen:
+            continue
+        seen.add(key)
+        links.append(
+            {
+                "source": a["entity"],
+                "target": b["entity"],
+                "source_id": a["id"],
+                "target_id": b["id"],
+                "relation": r,
+                "kind": kind,
+            }
+        )
+    return links
 
 
 def _entity_payload(doc_id: str, name: str) -> dict[str, Any]:
@@ -161,6 +291,7 @@ def _sync_history_comments(history_id: str | None, doc_id: str) -> None:
         title=item.get("title"),
         graph_id=history_id,
         comments=dict(_comments_for(doc_id)),
+        markers=list(_markers_for(doc_id)),
     )
 
 
@@ -176,9 +307,12 @@ def _persist_snapshot(
     title: str | None = None,
     history_id: str | None = None,
     comments: dict[str, str] | None = None,
+    markers: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if comments is not None:
         DOC_COMMENTS[document_id] = dict(comments)
+    if markers is not None:
+        DOC_MARKERS[document_id] = _normalize_markers(markers)
     return history.save(
         text=text,
         triples=triples,
@@ -190,6 +324,7 @@ def _persist_snapshot(
         title=title,
         graph_id=history_id,
         comments=dict(_comments_for(document_id)),
+        markers=list(_markers_for(document_id)),
     )
 
 @app.get("/", response_class=HTMLResponse)
@@ -216,9 +351,12 @@ def root() -> str:
 @app.get("/api/health")
 def health() -> dict[str, object]:
     from model.lmstudio import LMStudioExtractor
+    from model.openrouter import OpenRouterExtractor
 
     lm = LMStudioExtractor()
     ready = lm.ping()
+    or_client = OpenRouterExtractor()
+    or_ready = or_client.ready
     return {
         "status": "ok",
         "history_db": str(history.db_path),
@@ -231,6 +369,12 @@ def health() -> dict[str, object]:
             "base_url": lm.base_url,
             "model": lm.resolved_model if ready else None,
             "models": lm.list_models() if ready else [],
+        },
+        "openrouter": {
+            "ready": or_ready,
+            "base_url": or_client.base_url,
+            "model": or_client.resolved_model if or_ready else None,
+            "has_api_key": bool(or_client.api_key),
         },
     }
 
@@ -262,9 +406,51 @@ def analyze(body: AnalyzeBody) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Пустой текст")
 
     doc_id = _resolve_doc_id(body.document_id)
-    result = extractor.extract(text, engine=body.engine or "gemma")
+    result = extractor.extract(
+        text, engine=body.engine or "gemma", reasoning=bool(body.reasoning)
+    )
     snap = store.upsert_triples(doc_id, text, result["triples"])
     DOC_TEXTS[doc_id] = text
+    comments = result.get("comments")
+    if isinstance(comments, dict):
+        DOC_COMMENTS[doc_id] = {str(k): str(v) for k, v in comments.items() if str(k).strip() and str(v).strip()}
+    elif (body.engine or "").strip().lower() in {"deepseek", "deepseek-v4"}:
+        # Fresh DeepSeek run without comments → clear stale ones
+        DOC_COMMENTS[doc_id] = {}
+
+    geo_meta: dict[str, Any] = {"ok": False, "error": None, "links": []}
+    engine_l = (result.get("engine") or body.engine or "").strip().lower()
+    if body.geo_graph and result.get("triples") and engine_l in {"deepseek", "deepseek-v4"}:
+        from graph.geocode import build_geo_graph
+
+        geo_eng = (body.geo_engine or "deepseek-v4").strip().lower()
+        if geo_eng not in {"deepseek", "deepseek-v4"}:
+            geo_eng = "deepseek-v4"
+        geo = build_geo_graph(
+            text, result["triples"], engine=geo_eng, reasoning=bool(body.reasoning)
+        )
+        geo_meta = {
+            "ok": bool(geo.get("ok")),
+            "error": geo.get("error"),
+            "links": geo.get("links") or [],
+            "locations_found": geo.get("locations_found"),
+            "engine": geo.get("engine") or geo_eng,
+            "model": geo.get("model"),
+        }
+        if geo.get("markers"):
+            # keep manually placed markers, replace previous auto geo markers
+            kept = [m for m in _markers_for(doc_id) if not m.get("auto")]
+            DOC_MARKERS[doc_id] = _normalize_markers(kept + list(geo["markers"]))
+        debug = result.get("debug") or {}
+        debug["geo_raw"] = geo.get("raw") or ""
+        debug["geo_error"] = geo.get("error")
+        result["debug"] = debug
+        if geo.get("markers"):
+            n = len(geo["markers"])
+            hint = result.get("hint") or ""
+            extra = f"гео: {n} мест/событий, связей на карте: {len(geo.get('links') or [])}"
+            result["hint"] = f"{hint} · {extra}" if hint else extra
+
     saved = _persist_snapshot(
         document_id=doc_id,
         text=text,
@@ -273,16 +459,30 @@ def analyze(body: AnalyzeBody) -> dict[str, Any]:
         edges=snap.edges,
         engine=result.get("engine", body.engine),
         source=result.get("source"),
+        comments=DOC_COMMENTS.get(doc_id),
+        markers=DOC_MARKERS.get(doc_id),
+    )
+    markers = list(_markers_for(doc_id))
+    links = geo_meta.get("links") or _geo_links_from_markers_and_triples(
+        markers, result["triples"]
     )
     return {
         "document_id": doc_id,
         "text": text,
         "triples": result["triples"],
+        "entities_meta": result.get("entities_meta") or [],
+        "contradictions": result.get("contradictions") or [],
+        "comments": DOC_COMMENTS.get(doc_id, {}),
+        "markers": markers,
+        "geo_links": links,
+        "geo": geo_meta,
         "source": result["source"],
         "engine": result.get("engine", body.engine),
         "model_ready": result["model_ready"],
         "lm_ready": result.get("lm_ready"),
         "lm_model": result.get("lm_model"),
+        "openrouter_ready": result.get("openrouter_ready"),
+        "openrouter_model": result.get("openrouter_model"),
         "hint": result.get("hint"),
         "debug": result.get("debug") or {},
         "nodes": snap.nodes,
@@ -316,6 +516,8 @@ def ask(body: AskBody) -> dict[str, Any]:
         document_text=doc_text,
         prefer_gemma_for_text=True,
         web_search=bool(body.web_search),
+        engine=body.engine or "gemma",
+        reasoning=bool(body.reasoning),
     )
     snap = store.get_graph(doc_id)
     result["document_id"] = doc_id
@@ -418,6 +620,8 @@ def save_graph(body: SaveGraphBody) -> dict[str, Any]:
     DOC_TEXTS[doc_id] = text
     if body.comments is not None:
         DOC_COMMENTS[doc_id] = dict(body.comments)
+    if body.markers is not None:
+        DOC_MARKERS[doc_id] = _normalize_markers(body.markers)
     saved = _persist_snapshot(
         document_id=doc_id,
         text=text,
@@ -429,6 +633,7 @@ def save_graph(body: SaveGraphBody) -> dict[str, Any]:
         title=body.title,
         history_id=body.history_id,
         comments=DOC_COMMENTS.get(doc_id),
+        markers=DOC_MARKERS.get(doc_id),
     )
     return {
         "document_id": doc_id,
@@ -442,6 +647,7 @@ def save_graph(body: SaveGraphBody) -> dict[str, Any]:
         "engine": saved.get("engine"),
         "source": saved.get("source"),
         "comments": saved.get("comments") or {},
+        "markers": saved.get("markers") or [],
     }
 
 
@@ -456,6 +662,7 @@ def get_graph_history(graph_id: str, restore: bool = Query(default=True)) -> dic
         snap = store.upsert_triples(doc_id, item["text"], item["triples"])
         DOC_TEXTS[doc_id] = item["text"]
         DOC_COMMENTS[doc_id] = dict(item.get("comments") or {})
+        DOC_MARKERS[doc_id] = _normalize_markers(item.get("markers") or [])
         item = {**item, "nodes": snap.nodes, "edges": snap.edges, "document_id": doc_id}
 
     return {
@@ -469,8 +676,121 @@ def get_graph_history(graph_id: str, restore: bool = Query(default=True)) -> dic
         "source": item.get("source"),
         "title": item.get("title"),
         "comments": item.get("comments") or DOC_COMMENTS.get(doc_id, {}),
+        "markers": item.get("markers") or DOC_MARKERS.get(doc_id, []),
         "history": item,
     }
+
+
+@app.get("/api/markers")
+def get_markers(document_id: str | None = Query(default=None)) -> dict[str, Any]:
+    doc_id = _resolve_doc_id(document_id)
+    return {"document_id": doc_id, "markers": list(_markers_for(doc_id))}
+
+
+@app.put("/api/markers")
+def put_markers(body: MarkersBody) -> dict[str, Any]:
+    doc_id = _resolve_doc_id(body.document_id)
+    markers = _normalize_markers(body.markers)
+    DOC_MARKERS[doc_id] = markers
+    if body.history_id:
+        item = history.get(body.history_id)
+        if item:
+            history.save(
+                text=item.get("text") or DOC_TEXTS.get(doc_id, ""),
+                triples=item.get("triples") or _triples_from_edges(item.get("edges") or []),
+                nodes=item.get("nodes") or [],
+                edges=item.get("edges") or [],
+                document_id=doc_id,
+                engine=item.get("engine"),
+                source=item.get("source"),
+                title=item.get("title"),
+                graph_id=body.history_id,
+                comments=dict(_comments_for(doc_id)),
+                markers=markers,
+            )
+    return {"document_id": doc_id, "markers": markers, "count": len(markers)}
+
+
+@app.post("/api/geo/graph")
+def generate_geo_graph(body: GeoGraphBody) -> dict[str, Any]:
+    """Build place/event markers + links for map/globe from text & triples."""
+    from graph.geocode import build_geo_graph
+
+    doc_id = _resolve_doc_id(body.document_id)
+    text = body.document_text if body.document_text is not None else DOC_TEXTS.get(doc_id, "")
+    triples = body.triples
+    if triples is None:
+        snap = store.get_graph(doc_id)
+        triples = _triples_from_edges(snap.edges)
+    geo_eng = (body.engine or "deepseek-v4").strip().lower()
+    if geo_eng not in {"deepseek", "deepseek-v4"}:
+        geo_eng = "deepseek-v4"
+    geo = build_geo_graph(
+        text or "", triples or [], engine=geo_eng, reasoning=bool(body.reasoning)
+    )
+    if not geo.get("ok") and not geo.get("markers"):
+        raise HTTPException(
+            status_code=502,
+            detail=geo.get("error") or "Не удалось построить географ",
+        )
+    if body.replace:
+        kept = [m for m in _markers_for(doc_id) if not m.get("auto")]
+        DOC_MARKERS[doc_id] = _normalize_markers(kept + list(geo.get("markers") or []))
+    else:
+        DOC_MARKERS[doc_id] = _normalize_markers(
+            list(_markers_for(doc_id)) + list(geo.get("markers") or [])
+        )
+    markers = list(_markers_for(doc_id))
+    links = geo.get("links") or _geo_links_from_markers_and_triples(markers, triples)
+    return {
+        "document_id": doc_id,
+        "markers": markers,
+        "geo_links": links,
+        "ok": True,
+        "error": geo.get("error"),
+        "model": geo.get("model"),
+        "engine": geo.get("engine") or geo_eng,
+        "locations_found": geo.get("locations_found"),
+        "debug": {"geo_raw": geo.get("raw") or "", "geo_error": geo.get("error")},
+    }
+
+
+@app.get("/api/geocode")
+def geocode_place(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(default=5, ge=1, le=10),
+) -> dict[str, Any]:
+    """Nominatim-only geocoder."""
+    from graph.geocode import nominatim_search
+
+    query = (q or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Пустой запрос")
+    results = nominatim_search(query, limit=limit)
+    return {"query": query, "results": results}
+
+
+@app.post("/api/geocode/locate")
+def geocode_locate(body: LocateBody) -> dict[str, Any]:
+    """DeepSeek + OSM map search for entity / free-text query."""
+    from graph.geocode import locate_on_map
+
+    entity = (body.entity or "").strip()
+    query = (body.query or "").strip()
+    if not entity and not query:
+        raise HTTPException(status_code=400, detail="Нужна сущность или поисковый запрос")
+    doc_id = body.document_id
+    doc_text = body.document_text
+    if doc_text is None and doc_id:
+        doc_text = DOC_TEXTS.get(doc_id, "")
+    limit = max(1, min(int(body.limit or 5), 10))
+    return locate_on_map(
+        entity=entity,
+        query=query,
+        document_text=doc_text or "",
+        use_deepseek=bool(body.use_deepseek),
+        limit=limit,
+    )
 
 
 @app.patch("/api/graphs/{graph_id}")
@@ -527,15 +847,29 @@ def generate_entity_comment(body: EntityGenerateBody) -> dict[str, Any]:
     doc_text = body.document_text or DOC_TEXTS.get(doc_id) or ""
     relations = store.neighbors_of(name, doc_id)
 
-    from model.lmstudio import LMStudioExtractor
     from graph.websearch import search_web
 
-    lm = LMStudioExtractor()
-    if not lm.ping():
-        raise HTTPException(
-            status_code=503,
-            detail="LM Studio выключен — запусти Gemma Local Server",
-        )
+    engine = (body.engine or "gemma").strip().lower()
+    if engine in {"deepseek", "deepseek-v4"}:
+        from model.openrouter import openrouter_for_engine
+
+        client = openrouter_for_engine(engine)
+        if not client.ready:
+            raise HTTPException(
+                status_code=503,
+                detail="Нет OPENROUTER_API_KEY — задай ключ OpenRouter для DeepSeek",
+            )
+        label = "DeepSeek V4 Pro" if engine == "deepseek-v4" else "DeepSeek 3.2"
+    else:
+        from model.lmstudio import LMStudioExtractor
+
+        client = LMStudioExtractor()
+        if not client.ping():
+            raise HTTPException(
+                status_code=503,
+                detail="LM Studio выключен — запусти Gemma Local Server или выбери DeepSeek",
+            )
+        label = "Gemma"
 
     web_payload: dict[str, Any] = {"results": [], "error": None, "query": name}
     if body.web_search:
@@ -556,16 +890,21 @@ def generate_entity_comment(body: EntityGenerateBody) -> dict[str, Any]:
     if not has_doc and not has_rel and not has_web:
         raise HTTPException(status_code=400, detail="Нет текста, связей и результатов поиска")
 
-    gem = lm.generate_entity_comment(
+    gem = client.generate_entity_comment(
         doc_text,
         name,
         relations,
         web_results=web_payload.get("results") if has_web else None,
+        **(
+            {"reasoning": bool(body.reasoning)}
+            if engine in {"deepseek", "deepseek-v4"}
+            else {}
+        ),
     )
     if not gem.get("ok"):
         raise HTTPException(
             status_code=502,
-            detail=gem.get("error") or "Gemma не смогла сгенерировать комментарий",
+            detail=gem.get("error") or f"{label} не смогла сгенерировать комментарий",
         )
 
     comment = (gem.get("comment") or "").strip()
@@ -576,6 +915,7 @@ def generate_entity_comment(body: EntityGenerateBody) -> dict[str, Any]:
     payload = _entity_payload(doc_id, name)
     payload["comment"] = comment or payload["comment"]
     payload["generated"] = True
+    payload["engine"] = engine if engine in {"deepseek", "deepseek-v4"} else "gemma"
     payload["web_results"] = web_payload.get("results") or []
     payload["web_error"] = web_payload.get("error")
     debug_err = gem.get("error")

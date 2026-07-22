@@ -1,5 +1,17 @@
 import "./style.css";
 import { DataSet, Network } from "vis-network/standalone";
+import {
+  ensureGlobe,
+  ensureMap,
+  linksFromTriples,
+  resizeGlobe,
+  resizeMap,
+  setGeoCallbacks,
+  setGeoLinks,
+  setLinksVisible,
+  setPlaceMode,
+  syncMarkers,
+} from "./geo.js";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 
@@ -12,6 +24,9 @@ let lastSource = null;
 let allNodes = [];
 let graphNodes = [];
 let graphEdges = [];
+let geoMarkers = [];
+let geoLinks = [];
+let currentView = "graph";
 let disabled = new Set();
 let mutedNodes = new Set(); // transparent nodes
 let mutedEdgeIds = new Set(); // transparent (off) edges
@@ -29,11 +44,50 @@ let historyItems = [];
 let ctxEntityName = null;
 let entityName = null;
 
+function engineLabel(engine) {
+  const e = (engine || "").toLowerCase();
+  if (e === "microgpt") return "MicroGPT";
+  if (e === "deepseek-v4") return "DeepSeek V4 Pro";
+  if (e === "deepseek") return "DeepSeek 3.2";
+  if (e === "auto") return "Авто";
+  return "Gemma";
+}
+
+function isDeepseekEngine(engine) {
+  const e = (engine || "").toLowerCase();
+  return e === "deepseek" || e === "deepseek-v4";
+}
+
+function selectedTextEngine() {
+  const sel = el.qaEngine || el.entityQaEngine;
+  const e = (sel ? sel.value : "gemma") || "gemma";
+  return isDeepseekEngine(e) ? e : "gemma";
+}
+
+function setQaEngine(value, source) {
+  const next = isDeepseekEngine(value) ? value : "gemma";
+  if (el.qaEngine && source !== el.qaEngine) el.qaEngine.value = next;
+  if (el.entityQaEngine && source !== el.entityQaEngine) el.entityQaEngine.value = next;
+  syncGenerateButtonLabel();
+}
+
+function syncGenerateButtonLabel() {
+  const btn = el.entityGemma;
+  if (!btn || btn.classList.contains("is-loading")) return;
+  const label = btn.querySelector(".btn-label");
+  if (label) {
+    label.textContent = `Сгенерировать (${engineLabel(selectedTextEngine())})`;
+  }
+}
+
 const el = {
   text: document.getElementById("text-input"),
   analyze: document.getElementById("btn-analyze"),
   meta: document.getElementById("extract-meta"),
   engine: document.getElementById("engine-select"),
+  qaEngine: document.getElementById("qa-engine-select"),
+  entityQaEngine: document.getElementById("entity-qa-engine-select"),
+  reasoningToggle: document.getElementById("reasoning-toggle"),
   question: document.getElementById("question-input"),
   ask: document.getElementById("btn-ask"),
   answer: document.getElementById("answer"),
@@ -45,6 +99,11 @@ const el = {
   editS: document.getElementById("edit-s"),
   editR: document.getElementById("edit-r"),
   editO: document.getElementById("edit-o"),
+  editForm: document.getElementById("edit-form"),
+  editFormHome: document.getElementById("edit-form-home"),
+  editMeta: document.getElementById("edit-meta"),
+  fsEditDock: document.getElementById("fs-edit-dock"),
+  fsEditSlot: document.getElementById("fs-edit-slot"),
   debugBtn: document.getElementById("btn-debug"),
   debugClose: document.getElementById("btn-debug-close"),
   debugDrawer: document.getElementById("debug-drawer"),
@@ -53,11 +112,17 @@ const el = {
   debugParsed: document.getElementById("debug-parsed"),
   debugError: document.getElementById("debug-error"),
   saveGraph: document.getElementById("btn-save-graph"),
+  graphFs: document.getElementById("btn-graph-fs"),
+  graphFsExit: document.getElementById("btn-graph-fs-exit"),
+  graphStage: document.getElementById("graph-stage"),
   historyTabs: document.getElementById("history-tabs"),
   historyCount: document.getElementById("history-count"),
   historyEmpty: document.getElementById("history-empty"),
+  historySelect: document.getElementById("history-select"),
+  historyPanel: document.getElementById("history-panel"),
   ctxMenu: document.getElementById("ctx-menu"),
   ctxAbout: document.getElementById("ctx-about"),
+  ctxDelete: document.getElementById("ctx-delete"),
   entityDrawer: document.getElementById("entity-drawer"),
   entityTitle: document.getElementById("entity-title"),
   entityClose: document.getElementById("btn-entity-close"),
@@ -74,6 +139,25 @@ const el = {
   askWebSources: document.getElementById("ask-web-sources"),
   entityWebSearch: document.getElementById("entity-web-search"),
   entityWebSources: document.getElementById("entity-web-sources"),
+  edgeLegend: document.getElementById("edge-legend"),
+  viewGraph: document.getElementById("view-graph"),
+  viewMap: document.getElementById("view-map"),
+  viewGlobe: document.getElementById("view-globe"),
+  mapEntity: document.getElementById("map-entity-select"),
+  mapSearch: document.getElementById("map-search-input"),
+  mapPlaceMode: document.getElementById("map-place-mode"),
+  mapUseDeepseek: document.getElementById("map-use-deepseek"),
+  mapGeocode: document.getElementById("btn-map-geocode"),
+  mapGeoGraph: document.getElementById("btn-map-geo-graph"),
+  mapGeoAuto: document.getElementById("map-geo-auto"),
+  mapShowLinks: document.getElementById("map-show-links"),
+  globeShowLinks: document.getElementById("globe-show-links"),
+  mapGeoEngine: document.getElementById("map-geo-engine"),
+  mapMeta: document.getElementById("map-meta"),
+  globeMeta: document.getElementById("globe-meta"),
+  tabGraph: document.getElementById("tab-view-graph"),
+  tabMap: document.getElementById("tab-view-map"),
+  tabGlobe: document.getElementById("tab-view-globe"),
 };
 
 async function post(url, body) {
@@ -113,15 +197,39 @@ function setDebug(debug, fallbackParsed) {
     raw_response: d.raw_response || "",
     parsed_json: d.parsed_json || fallbackParsed || [],
     error: d.error || "",
+    comments_raw: d.comments_raw || "",
+    comments_error: d.comments_error || "",
+    comments_missing: d.comments_missing || [],
   };
   if (el.debugPrompt) el.debugPrompt.textContent = lastDebug.prompt_user || "—";
-  if (el.debugRaw) el.debugRaw.textContent = lastDebug.raw_response || "—";
+  let raw = lastDebug.raw_response || "—";
+  if (d.reasoning) {
+    raw = "=== Reasoning ===\n" + d.reasoning + "\n\n=== Ответ ===\n" + raw;
+  }
+  if (Array.isArray(d.contradictions) && d.contradictions.length) {
+    raw +=
+      "\n\n=== Противоречия ===\n" + JSON.stringify(d.contradictions, null, 2);
+  }
+  if (Array.isArray(d.entities) && d.entities.length) {
+    raw += "\n\n=== Entities ===\n" + JSON.stringify(d.entities, null, 2);
+  }
+  if (lastDebug.comments_raw) {
+    raw += "\n\n=== Комментарии к сущностям ===\n" + lastDebug.comments_raw;
+  }
+  if (d.geo_raw) {
+    raw += "\n\n=== Географ (места/события) ===\n" + d.geo_raw;
+  }
+  if (el.debugRaw) el.debugRaw.textContent = raw;
   if (el.debugParsed) {
     el.debugParsed.textContent = lastDebug.parsed_json.length
       ? JSON.stringify(lastDebug.parsed_json, null, 2)
       : "—";
   }
-  if (el.debugError) el.debugError.textContent = lastDebug.error || "";
+  const errs = [lastDebug.error, lastDebug.comments_error, d.geo_error].filter(Boolean);
+  if (lastDebug.comments_missing && lastDebug.comments_missing.length) {
+    errs.push("без комментария: " + lastDebug.comments_missing.join(", "));
+  }
+  if (el.debugError) el.debugError.textContent = errs.join(" · ");
 }
 
 function openDebug() {
@@ -180,20 +288,42 @@ function showCtxMenu(x, y, name) {
   ctxEntityName = name;
   el.ctxMenu.hidden = false;
   const pad = 8;
+  const stage = el.graphStage;
+  const fs = isGraphFullscreen() && stage;
+  const bounds = fs ? stage.getBoundingClientRect() : {
+    left: 0,
+    top: 0,
+    right: window.innerWidth,
+    bottom: window.innerHeight,
+    width: window.innerWidth,
+    height: window.innerHeight,
+  };
+  // Measure after show
   const rect = el.ctxMenu.getBoundingClientRect();
-  const left = Math.min(x, window.innerWidth - rect.width - pad);
-  const top = Math.min(y, window.innerHeight - rect.height - pad);
-  el.ctxMenu.style.left = `${Math.max(pad, left)}px`;
-  el.ctxMenu.style.top = `${Math.max(pad, top)}px`;
+  const left = Math.min(Math.max(bounds.left + pad, x), bounds.right - rect.width - pad);
+  const top = Math.min(Math.max(bounds.top + pad, y), bounds.bottom - rect.height - pad);
+  el.ctxMenu.style.left = `${left}px`;
+  el.ctxMenu.style.top = `${top}px`;
 }
 
 function formatRelation(rel, entity) {
   const neighbor = rel.neighbor || "?";
   const relation = rel.relation || "?";
+  const kind = (rel.kind || "explicit").toLowerCase();
+  const tag =
+    kind === "hidden" ? " · скрытая" : kind === "false" ? " · ложная" : "";
+  const conf =
+    rel.confidence != null && rel.confidence !== ""
+      ? ` · ${Number(rel.confidence).toFixed(2)}`
+      : "";
+  let line;
   if (rel.direction === "in") {
-    return `${neighbor} —[${relation}]→ ${entity}`;
+    line = `${neighbor} —[${relation}]→ ${entity}${tag}${conf}`;
+  } else {
+    line = `${entity} —[${relation}]→ ${neighbor}${tag}${conf}`;
   }
-  return `${entity} —[${relation}]→ ${neighbor}`;
+  if (rel.evidence) line += `\n  ↳ ${rel.evidence}`;
+  return line;
 }
 
 function fillEntityPanel(data) {
@@ -204,6 +334,9 @@ function fillEntityPanel(data) {
     el.entityRelations.innerHTML = "";
     for (const rel of data.relations || []) {
       const li = document.createElement("li");
+      const kind = (rel.kind || "explicit").toLowerCase();
+      if (kind === "hidden") li.classList.add("rel-hidden");
+      if (kind === "false") li.classList.add("rel-false");
       li.textContent = formatRelation(rel, entityName);
       el.entityRelations.appendChild(li);
     }
@@ -263,16 +396,18 @@ async function generateEntityComment() {
   if (!entityName || !documentId) return;
   const btn = el.entityGemma;
   const label = btn ? btn.querySelector(".btn-label") : null;
+  const textEngine = selectedTextEngine();
+  const modelName = engineLabel(textEngine);
   if (btn) {
     btn.disabled = true;
     btn.classList.add("is-loading");
   }
   if (label) label.textContent = "Генерация…";
-  if (el.entityMeta) el.entityMeta.textContent = "Gemma пишет комментарий…";
+  if (el.entityMeta) el.entityMeta.textContent = `${modelName} пишет комментарий…`;
   try {
     const useWeb = !!(el.entityWebSearch && el.entityWebSearch.checked);
     if (useWeb && el.entityMeta) {
-      el.entityMeta.textContent = "Поиск + Gemma…";
+      el.entityMeta.textContent = `Поиск + ${modelName}…`;
     }
     const data = await post("/api/entity/comment/generate", {
       name: entityName,
@@ -282,6 +417,8 @@ async function generateEntityComment() {
       // Только вставить в поле — сохранение через кнопку «Сохранить»
       save: false,
       web_search: useWeb,
+      engine: textEngine,
+      reasoning: selectedReasoning(),
     });
     const comment = (data.comment || "").trim();
     fillEntityPanel({ ...data, comment });
@@ -299,7 +436,7 @@ async function generateEntityComment() {
     if (comment) {
       meta = "Комментарий вставлен в поле — нажми «Сохранить»";
     } else {
-      meta = data.debug?.error || "Gemma вернула пустой комментарий — открой Debug-лог";
+      meta = data.debug?.error || `${modelName} вернула пустой комментарий — открой Debug-лог`;
     }
     if (useWeb) {
       const n = (data.web_results || []).length;
@@ -313,7 +450,7 @@ async function generateEntityComment() {
       btn.disabled = false;
       btn.classList.remove("is-loading");
     }
-    if (label) label.textContent = "Сгенерировать (Gemma)";
+    syncGenerateButtonLabel();
   }
 }
 
@@ -343,11 +480,23 @@ function applyPayload(data) {
   if (data.engine) lastEngine = data.engine;
   if (data.source) lastSource = data.source;
   if (data.nodes) allNodes = data.nodes;
+  if (Array.isArray(data.markers)) {
+    geoMarkers = data.markers;
+  }
+  if (Array.isArray(data.geo_links)) {
+    geoLinks = data.geo_links;
+  } else if (Array.isArray(data.markers) && Array.isArray(lastTriples)) {
+    geoLinks = linksFromTriples(geoMarkers, lastTriples);
+  }
+  if (Array.isArray(data.markers) || Array.isArray(data.geo_links)) {
+    refreshGeoViews();
+  }
   if (data.highlight_nodes) highlightNodes = new Set(data.highlight_nodes);
   else highlightNodes = new Set();
   if (data.highlight_edges) highlightEdges = new Set(data.highlight_edges);
   else highlightEdges = new Set();
   renderUnits();
+  fillMapEntitySelect();
   refreshVisibility();
   renderHistoryTabs();
 }
@@ -391,45 +540,66 @@ async function refreshVisibility() {
 }
 
 function renderHistoryTabs() {
-  if (!el.historyTabs) return;
-  el.historyTabs.innerHTML = "";
   if (el.historyCount) {
     el.historyCount.textContent = historyItems.length ? `${historyItems.length}` : "";
   }
   if (el.historyEmpty) el.historyEmpty.hidden = historyItems.length > 0;
 
-  for (const item of historyItems) {
-    const tab = document.createElement("div");
-    tab.className = "history-tab" + (item.id === historyId ? " is-active" : "");
-    tab.setAttribute("role", "tab");
-    tab.setAttribute("aria-selected", item.id === historyId ? "true" : "false");
+  if (el.historyTabs) {
+    el.historyTabs.innerHTML = "";
+    for (const item of historyItems) {
+      const tab = document.createElement("div");
+      tab.className = "history-tab" + (item.id === historyId ? " is-active" : "");
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-selected", item.id === historyId ? "true" : "false");
 
-    const main = document.createElement("button");
-    main.type = "button";
-    main.className = "history-tab-main";
-    main.title = item.preview || item.title || "";
-    main.innerHTML =
-      `<span class="history-tab-title"></span>` +
-      `<span class="history-tab-meta"></span>`;
-    main.querySelector(".history-tab-title").textContent = item.title || "Граф";
-    main.querySelector(".history-tab-meta").textContent =
-      `${formatHistoryTime(item.updated_at)} · ${item.triple_count ?? 0} св.`;
-    main.addEventListener("click", () => loadHistoryItem(item.id));
+      const main = document.createElement("button");
+      main.type = "button";
+      main.className = "history-tab-main";
+      main.title = item.preview || item.title || "";
+      main.innerHTML =
+        `<span class="history-tab-title"></span>` +
+        `<span class="history-tab-meta"></span>`;
+      main.querySelector(".history-tab-title").textContent = item.title || "Граф";
+      main.querySelector(".history-tab-meta").textContent =
+        `${formatHistoryTime(item.updated_at)} · ${item.triple_count ?? 0} св.`;
+      main.addEventListener("click", () => loadHistoryItem(item.id));
 
-    const del = document.createElement("button");
-    del.type = "button";
-    del.className = "history-tab-del";
-    del.title = "Удалить";
-    del.setAttribute("aria-label", "Удалить из истории");
-    del.textContent = "×";
-    del.addEventListener("click", (e) => {
-      e.stopPropagation();
-      deleteHistoryItem(item.id);
-    });
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "history-tab-del";
+      del.title = "Удалить";
+      del.setAttribute("aria-label", "Удалить из истории");
+      del.textContent = "×";
+      del.addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteHistoryItem(item.id);
+      });
 
-    tab.appendChild(main);
-    tab.appendChild(del);
-    el.historyTabs.appendChild(tab);
+      tab.appendChild(main);
+      tab.appendChild(del);
+      el.historyTabs.appendChild(tab);
+    }
+  }
+
+  if (el.historySelect) {
+    const prev = el.historySelect.value;
+    el.historySelect.innerHTML = "";
+    const opt0 = document.createElement("option");
+    opt0.value = "";
+    opt0.textContent = historyItems.length ? "— выбрать граф —" : "— история пуста —";
+    el.historySelect.appendChild(opt0);
+    for (const item of historyItems) {
+      const opt = document.createElement("option");
+      opt.value = item.id;
+      const when = formatHistoryTime(item.updated_at);
+      opt.textContent = `${item.title || "Граф"} · ${when} · ${item.triple_count ?? 0} св.`;
+      el.historySelect.appendChild(opt);
+    }
+    const keep = historyId || prev;
+    if (keep && [...el.historySelect.options].some((o) => o.value === keep)) {
+      el.historySelect.value = keep;
+    }
   }
 }
 
@@ -485,6 +655,7 @@ async function saveCurrentGraph() {
       triples: lastTriples,
       nodes: allNodes,
       edges: graphEdges.length ? graphEdges : undefined,
+      markers: geoMarkers,
       engine: lastEngine || (el.engine ? el.engine.value : null),
       source: lastSource,
       history_id: historyId,
@@ -495,6 +666,304 @@ async function saveCurrentGraph() {
     await refreshHistoryList();
   } catch (err) {
     el.meta.textContent = String(err.message || err);
+  }
+}
+
+function isGraphFullscreen() {
+  const stage = el.graphStage;
+  if (!stage) return false;
+  return document.fullscreenElement === stage || document.webkitFullscreenElement === stage;
+}
+
+function syncGraphFsUi() {
+  const on = isGraphFullscreen();
+  if (el.graphFs) {
+    el.graphFs.hidden = on;
+    el.graphFs.textContent = "На весь экран";
+    el.graphFs.title = "Полноэкранный режим (Esc — выход)";
+  }
+  if (el.graphFsExit) el.graphFsExit.hidden = !on;
+  if (el.graphStage) el.graphStage.classList.toggle("is-fullscreen", on);
+  if (on && el.historyPanel && !el.historyPanel.open) {
+    el.historyPanel.open = true;
+  }
+  syncFsEditDock(on);
+  syncFsOverlays(on);
+  resizeGraphNetwork();
+}
+
+/** Move edit form into fullscreen stage so правки доступны на весь экран. */
+function syncFsEditDock(on) {
+  const form = el.editForm;
+  if (!form) return;
+  if (on) {
+    if (el.fsEditSlot && form.parentElement !== el.fsEditSlot) {
+      el.fsEditSlot.appendChild(form);
+    }
+    form.classList.add("is-fs-dock");
+    if (el.fsEditDock) el.fsEditDock.hidden = false;
+  } else {
+    form.classList.remove("is-fs-dock");
+    if (el.editFormHome && form.parentElement !== el.editFormHome) {
+      el.editFormHome.appendChild(form);
+    }
+    if (el.fsEditDock) el.fsEditDock.hidden = true;
+  }
+}
+
+/**
+ * Entity drawer / ctx menu: on body in normal mode (panel has overflow+backdrop-filter),
+ * inside graph-stage in fullscreen (otherwise they vanish).
+ */
+function syncFsOverlays(on) {
+  const stage = el.graphStage;
+  const host = document.body;
+  if (!stage) return;
+  const target = on ? stage : host;
+  for (const node of [el.ctxMenu, el.entityDrawer]) {
+    if (node && node.parentElement !== target) target.appendChild(node);
+  }
+}
+
+function resizeGraphNetwork() {
+  if (network) {
+    requestAnimationFrame(() => {
+      try {
+        network.redraw();
+        network.fit({ animation: { duration: 280, easingFunction: "easeInOutQuad" } });
+      } catch (_) {
+        /* ignore */
+      }
+    });
+  }
+  resizeMap();
+  resizeGlobe();
+}
+
+function fillMapEntitySelect() {
+  if (!el.mapEntity) return;
+  const prev = el.mapEntity.value;
+  el.mapEntity.innerHTML = "";
+  const opt0 = document.createElement("option");
+  opt0.value = "";
+  opt0.textContent = allNodes.length ? "— выбери сущность —" : "Сначала проанализируй текст";
+  el.mapEntity.appendChild(opt0);
+  for (const n of allNodes) {
+    const opt = document.createElement("option");
+    opt.value = n.id;
+    opt.textContent = n.label || n.id;
+    el.mapEntity.appendChild(opt);
+  }
+  if (prev && [...el.mapEntity.options].some((o) => o.value === prev)) {
+    el.mapEntity.value = prev;
+  }
+}
+
+function refreshGeoViews() {
+  setGeoLinks(geoLinks);
+  syncMarkers(geoMarkers, { onRemove: removeGeoMarker, links: geoLinks });
+  if (el.mapMeta) {
+    el.mapMeta.textContent = geoMarkers.length
+      ? `меток: ${geoMarkers.length}` +
+        (geoLinks.length ? ` · связей: ${geoLinks.length}` : "")
+      : "клик / поиск / «Собрать географ»";
+  }
+  if (el.globeMeta) {
+    el.globeMeta.textContent = geoMarkers.length
+      ? `точек: ${geoMarkers.length}` +
+        (geoLinks.length ? ` · дуг: ${geoLinks.length}` : "")
+      : "Метки и связи графа появляются на глобусе";
+  }
+}
+
+async function persistMarkers() {
+  if (!documentId) return;
+  try {
+    await api("/api/markers", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        document_id: documentId,
+        history_id: historyId,
+        markers: geoMarkers,
+      }),
+    });
+  } catch (err) {
+    if (el.mapMeta) el.mapMeta.textContent = String(err.message || err);
+  }
+}
+
+function addGeoMarker(entity, lat, lng, note = "", kind = "place") {
+  const name = (entity || "").trim() || "Точка";
+  const id = `${name}:${lat.toFixed(5)}:${lng.toFixed(5)}:${Date.now()}`;
+  geoMarkers = [
+    ...geoMarkers,
+    {
+      id,
+      entity: name,
+      lat,
+      lng,
+      note: String(note || "").trim(),
+      kind: kind === "event" ? "event" : "place",
+      auto: false,
+    },
+  ];
+  geoLinks = linksFromTriples(geoMarkers, lastTriples);
+  refreshGeoViews();
+  persistMarkers();
+}
+
+function removeGeoMarker(id) {
+  geoMarkers = geoMarkers.filter((m) => m.id !== id);
+  geoLinks = linksFromTriples(geoMarkers, lastTriples);
+  refreshGeoViews();
+  persistMarkers();
+}
+
+function selectedGeoEngine() {
+  const v = el.mapGeoEngine ? el.mapGeoEngine.value : "deepseek-v4";
+  return v === "deepseek" ? "deepseek" : "deepseek-v4";
+}
+
+function selectedReasoning() {
+  return !!(el.reasoningToggle && el.reasoningToggle.checked);
+}
+
+function syncLinkToggles(checked) {
+  const on = !!checked;
+  if (el.mapShowLinks) el.mapShowLinks.checked = on;
+  if (el.globeShowLinks) el.globeShowLinks.checked = on;
+  setLinksVisible(on);
+}
+
+async function buildGeoGraphFromApi() {
+  if (!documentId && !(documentText || (el.text && el.text.value))) {
+    if (el.mapMeta) el.mapMeta.textContent = "Сначала проанализируй текст";
+    return;
+  }
+  const eng = selectedGeoEngine();
+  if (el.mapMeta) el.mapMeta.textContent = `${engineLabel(eng)} собирает географ…`;
+  try {
+    const data = await post("/api/geo/graph", {
+      document_id: documentId,
+      document_text: documentText || (el.text ? el.text.value : ""),
+      triples: lastTriples,
+      replace: true,
+      engine: eng,
+      reasoning: selectedReasoning(),
+    });
+    if (Array.isArray(data.markers)) geoMarkers = data.markers;
+    if (Array.isArray(data.geo_links)) geoLinks = data.geo_links;
+    else geoLinks = linksFromTriples(geoMarkers, lastTriples);
+    refreshGeoViews();
+    ensureMap();
+    if (data.debug) setDebug({ ...(lastDebug || {}), ...data.debug }, lastTriples);
+    if (el.mapMeta) {
+      el.mapMeta.textContent = `гео: ${geoMarkers.length} точек, ${geoLinks.length} связей · ${engineLabel(data.engine || eng)}`;
+    }
+  } catch (err) {
+    if (el.mapMeta) el.mapMeta.textContent = String(err.message || err);
+  }
+}
+
+function switchView(view) {
+  currentView = view === "map" || view === "globe" ? view : "graph";
+  const tabs = [
+    [el.tabGraph, "graph"],
+    [el.tabMap, "map"],
+    [el.tabGlobe, "globe"],
+  ];
+  for (const [btn, name] of tabs) {
+    if (btn) btn.classList.toggle("is-active", name === currentView);
+  }
+  if (el.viewGraph) {
+    el.viewGraph.hidden = currentView !== "graph";
+    el.viewGraph.classList.toggle("is-active", currentView === "graph");
+  }
+  if (el.viewMap) {
+    el.viewMap.hidden = currentView !== "map";
+    el.viewMap.classList.toggle("is-active", currentView === "map");
+  }
+  if (el.viewGlobe) {
+    el.viewGlobe.hidden = currentView !== "globe";
+    el.viewGlobe.classList.toggle("is-active", currentView === "globe");
+  }
+  if (currentView === "map") {
+    ensureMap();
+    refreshGeoViews();
+    resizeMap();
+  } else if (currentView === "globe") {
+    ensureGlobe();
+    refreshGeoViews();
+    resizeGlobe();
+  } else if (network) {
+    resizeGraphNetwork();
+  }
+}
+
+async function geocodeSelectedEntity() {
+  const entity = el.mapEntity ? el.mapEntity.value.trim() : "";
+  const query = el.mapSearch ? el.mapSearch.value.trim() : "";
+  if (!entity && !query) {
+    if (el.mapMeta) el.mapMeta.textContent = "Выбери сущность или введи поиск";
+    return;
+  }
+  const useDeepseek = !!(el.mapUseDeepseek && el.mapUseDeepseek.checked);
+  const label = query || entity;
+  if (el.mapMeta) {
+    el.mapMeta.textContent = useDeepseek
+      ? `DeepSeek + карта: ${label}…`
+      : `Карта OSM: ${label}…`;
+  }
+  try {
+    const data = await post("/api/geocode/locate", {
+      entity,
+      query,
+      document_id: documentId,
+      document_text: documentText || (el.text ? el.text.value : ""),
+      use_deepseek: useDeepseek,
+      limit: 5,
+    });
+    const hit = (data.results || [])[0];
+    if (!hit) {
+      const err =
+        (data.deepseek && data.deepseek.error) ||
+        "Ничего не найдено — уточни запрос или кликни по карте";
+      if (el.mapMeta) el.mapMeta.textContent = err;
+      return;
+    }
+    const markerName = entity || query || hit.display_name || "Точка";
+    const noteParts = [];
+    if (hit.display_name) noteParts.push(hit.display_name);
+    if (hit.source) noteParts.push(hit.source);
+    if (data.deepseek && data.deepseek.note) noteParts.push(data.deepseek.note);
+    addGeoMarker(markerName, hit.lat, hit.lng, noteParts.join(" · "));
+    ensureMap();
+    const src = hit.source === "deepseek" ? "DeepSeek" : "OSM";
+    const name = hit.display_name || "";
+    if (el.mapMeta) {
+      el.mapMeta.textContent = name
+        ? `${src}: ${name.length > 56 ? name.slice(0, 56) + "…" : name}`
+        : `метка добавлена (${src})`;
+    }
+  } catch (err) {
+    if (el.mapMeta) el.mapMeta.textContent = String(err.message || err);
+  }
+}
+
+async function toggleGraphFullscreen() {
+  const stage = el.graphStage;
+  if (!stage) return;
+  try {
+    if (isGraphFullscreen()) {
+      if (document.exitFullscreen) await document.exitFullscreen();
+      else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+    } else {
+      if (stage.requestFullscreen) await stage.requestFullscreen();
+      else if (stage.webkitRequestFullscreen) stage.webkitRequestFullscreen();
+    }
+  } catch (err) {
+    if (el.meta) el.meta.textContent = String(err.message || err);
   }
 }
 
@@ -548,13 +1017,44 @@ function drawGraph(nodes, edges) {
         transparentNodes.has(e.source) || transparentNodes.has(e.target);
       const showRed = !off && linked;
       const hi = highlightEdges.has(e.id);
+      const kind = (e.kind || "explicit").toLowerCase();
+      const isHidden = kind === "hidden";
+      const isFalse = kind === "false";
+      let baseColor = "#4e6676";
+      let fontColor = "#8a9aa6";
+      let dashes = false;
+      let width = 1;
+      let label = e.label || e.relation || "";
+      if (isHidden) {
+        baseColor = "#2ec4b6";
+        fontColor = "#5fd9cd";
+        dashes = [7, 5];
+        width = 2.4;
+        if (label && !/скрыт/i.test(label)) label = `${label} · скрытая`;
+      } else if (isFalse) {
+        baseColor = "#ff5c8a";
+        fontColor = "#ff8aad";
+        dashes = [4, 4];
+        width = 2.6;
+        if (label && !/ложн/i.test(label)) label = `${label} · ложная`;
+      }
       return {
         id: e.id,
         from: e.source,
         to: e.target,
-        label: e.label || e.relation,
+        label,
+        title: [
+          e.evidence ? `evidence: ${e.evidence}` : "",
+          e.confidence != null && e.confidence !== ""
+            ? `confidence: ${e.confidence}`
+            : "",
+          kind !== "explicit" ? `kind: ${kind}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n") || undefined,
         arrows: "to",
-        width: showRed ? 2.6 : 1,
+        dashes: off ? false : dashes,
+        width: showRed ? 2.6 : width,
         color: {
           color: off
             ? "rgba(78, 102, 118, 0.1)"
@@ -562,12 +1062,16 @@ function drawGraph(nodes, edges) {
               ? "#c45c5c"
               : hi
                 ? "#dadee1"
-                : "#4e6676",
-          highlight: showRed ? "#e07070" : "#dadee1",
+                : baseColor,
+          highlight: showRed ? "#e07070" : isFalse ? "#ff7aa0" : isHidden ? "#5fd9cd" : "#dadee1",
           opacity: off ? 0.1 : 1,
         },
         font: {
-          color: off ? "rgba(138, 154, 166, 0.12)" : showRed ? "#c97878" : "#8a9aa6",
+          color: off
+            ? "rgba(138, 154, 166, 0.12)"
+            : showRed
+              ? "#c97878"
+              : fontColor,
           size: 11,
           face: "Resist Sans Text",
           strokeWidth: 0,
@@ -588,6 +1092,10 @@ function drawGraph(nodes, edges) {
     network.setData({ nodes: visNodes, edges: visEdges });
   } else {
     network = new Network(el.graph, { nodes: visNodes, edges: visEdges }, options);
+  }
+
+  if (el.edgeLegend) {
+    el.edgeLegend.hidden = !(graphEdges || []).length;
   }
 
   if (network && !networkBound) {
@@ -648,15 +1156,31 @@ el.analyze.addEventListener("click", async () => {
       text: el.text.value,
       document_id: documentId,
       engine: el.engine ? el.engine.value : "gemma",
+      geo_graph: el.mapGeoAuto ? el.mapGeoAuto.checked : true,
+      geo_engine: selectedGeoEngine(),
+      reasoning: selectedReasoning(),
     });
-    const engineLabel =
-      data.engine === "microgpt" ? "MicroGPT" : data.engine === "auto" ? "Авто" : "Gemma";
+    const eng = engineLabel(data.engine);
     el.meta.textContent =
-      `модель: ${engineLabel} · источник: ${data.source} · троек: ${data.triples.length}` +
+      `модель: ${eng}` +
+      (selectedReasoning() && isDeepseekEngine(data.engine) ? " · reasoning" : "") +
+      ` · источник: ${data.source} · троек: ${data.triples.length}` +
+      (data.comments && Object.keys(data.comments).length
+        ? ` · комментариев: ${Object.keys(data.comments).length}`
+        : "") +
+      (data.markers && data.markers.length ? ` · гео: ${data.markers.length}` : "") +
+      (data.geo_links && data.geo_links.length
+        ? ` · гео-связей: ${data.geo_links.length}`
+        : "") +
       (data.lm_ready
         ? ` · Gemma: ${data.lm_model || "ok"}`
         : data.engine === "gemma" || data.engine === "auto"
           ? " · Gemma выкл"
+          : "") +
+      (data.openrouter_ready
+        ? ` · DeepSeek: ${data.openrouter_model || "ok"}`
+        : data.engine === "deepseek" || data.engine === "deepseek-v4"
+          ? " · DeepSeek: нет ключа"
           : "") +
       (data.model_ready ? " · MicroGPT ок" : "");
     if (data.hint) {
@@ -677,19 +1201,31 @@ el.analyze.addEventListener("click", async () => {
 el.ask.addEventListener("click", async () => {
   try {
     const useWeb = !!(el.askWebSearch && el.askWebSearch.checked);
-    el.answer.textContent = useWeb ? "Поиск + ответ…" : "Ответ…";
+    const textEngine = selectedTextEngine();
+    const modelName = engineLabel(textEngine);
+    el.answer.textContent = useWeb ? `Поиск + ${modelName}…` : "Ответ…";
     const data = await post("/api/ask", {
       question: el.question.value,
       document_id: documentId,
       document_text: documentText || el.text.value,
       web_search: useWeb,
+      engine: textEngine,
+      reasoning: selectedReasoning(),
     });
     const modeLabel =
-      data.qa_mode === "text_gemma"
+      data.qa_mode === "text_deepseek_v4"
         ? useWeb
-          ? "[Gemma + веб]\n"
-          : "[Gemma по тексту]\n"
-        : "[Граф]\n";
+          ? "[DeepSeek V4 Pro + веб]\n"
+          : "[DeepSeek V4 Pro по тексту]\n"
+        : data.qa_mode === "text_deepseek"
+          ? useWeb
+            ? "[DeepSeek 3.2 + веб]\n"
+            : "[DeepSeek 3.2 по тексту]\n"
+          : data.qa_mode === "text_gemma"
+            ? useWeb
+              ? "[Gemma + веб]\n"
+              : "[Gemma по тексту]\n"
+            : "[Граф]\n";
     el.answer.textContent = modeLabel + (data.answer || "");
     renderWebSources(el.askWebSources, data.web_results, data.web_error);
     if (data.debug) {
@@ -722,6 +1258,7 @@ el.question.addEventListener("keydown", (e) => {
 
 el.add.addEventListener("click", async () => {
   try {
+    if (el.editMeta) el.editMeta.textContent = "Добавляю…";
     const data = await post("/api/edit", {
       action: "add_triple",
       document_id: documentId,
@@ -733,12 +1270,73 @@ el.add.addEventListener("click", async () => {
     if (Array.isArray(data.triples)) lastTriples = data.triples;
     applyPayload(data);
     await refreshHistoryList();
+    if (el.editMeta) el.editMeta.textContent = "Связь добавлена";
   } catch (err) {
-    el.answer.textContent = String(err.message || err);
+    const msg = String(err.message || err);
+    if (el.editMeta) el.editMeta.textContent = msg;
+    else el.answer.textContent = msg;
   }
 });
 
 if (el.saveGraph) el.saveGraph.addEventListener("click", saveCurrentGraph);
+if (el.historySelect) {
+  el.historySelect.addEventListener("change", () => {
+    const id = el.historySelect.value;
+    if (id) loadHistoryItem(id);
+  });
+}
+if (el.graphFs) el.graphFs.addEventListener("click", toggleGraphFullscreen);
+if (el.graphFsExit) el.graphFsExit.addEventListener("click", toggleGraphFullscreen);
+document.addEventListener("fullscreenchange", () => {
+  syncGraphFsUi();
+});
+document.addEventListener("webkitfullscreenchange", () => {
+  syncGraphFsUi();
+});
+syncGraphFsUi();
+
+setGeoCallbacks({
+  activate: (m) => {
+    if (m && m.entity) openEntityPanel(m.entity);
+  },
+  place: (lat, lng) => {
+    const entity = el.mapEntity ? el.mapEntity.value.trim() : "";
+    if (!entity) {
+      if (el.mapMeta) el.mapMeta.textContent = "Сначала выбери сущность";
+      return;
+    }
+    if (!documentId) {
+      if (el.mapMeta) el.mapMeta.textContent = "Сначала проанализируй текст";
+      return;
+    }
+    addGeoMarker(entity, lat, lng);
+  },
+});
+if (el.mapPlaceMode) {
+  setPlaceMode(el.mapPlaceMode.checked);
+  el.mapPlaceMode.addEventListener("change", () => setPlaceMode(el.mapPlaceMode.checked));
+}
+if (el.mapShowLinks) {
+  el.mapShowLinks.addEventListener("change", () => syncLinkToggles(el.mapShowLinks.checked));
+}
+if (el.globeShowLinks) {
+  el.globeShowLinks.addEventListener("change", () => syncLinkToggles(el.globeShowLinks.checked));
+}
+syncLinkToggles(el.mapShowLinks ? el.mapShowLinks.checked : true);
+if (el.mapGeocode) el.mapGeocode.addEventListener("click", geocodeSelectedEntity);
+if (el.mapGeoGraph) el.mapGeoGraph.addEventListener("click", buildGeoGraphFromApi);
+if (el.mapSearch) {
+  el.mapSearch.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      geocodeSelectedEntity();
+    }
+  });
+}
+if (el.tabGraph) el.tabGraph.addEventListener("click", () => switchView("graph"));
+if (el.tabMap) el.tabMap.addEventListener("click", () => switchView("map"));
+if (el.tabGlobe) el.tabGlobe.addEventListener("click", () => switchView("globe"));
+
 if (el.debugBtn) el.debugBtn.addEventListener("click", openDebug);
 if (el.debugClose) el.debugClose.addEventListener("click", closeDebug);
 if (el.debugDrawer) {
@@ -751,6 +1349,32 @@ if (el.ctxAbout) {
     if (ctxEntityName) openEntityPanel(ctxEntityName);
   });
 }
+if (el.ctxDelete) {
+  el.ctxDelete.addEventListener("click", async () => {
+    const name = ctxEntityName;
+    hideCtxMenu();
+    if (!name || !documentId) return;
+    if (!window.confirm(`Удалить узел «${name}» и все его связи?`)) return;
+    try {
+      if (el.editMeta) el.editMeta.textContent = "Удаляю…";
+      const data = await post("/api/edit", {
+        action: "delete_node",
+        document_id: documentId,
+        name,
+        history_id: historyId,
+      });
+      if (Array.isArray(data.triples)) lastTriples = data.triples;
+      if (entityName === name) closeEntityPanel();
+      applyPayload(data);
+      await refreshHistoryList();
+      if (el.editMeta) el.editMeta.textContent = `Узел «${name}» удалён`;
+    } catch (err) {
+      const msg = String(err.message || err);
+      if (el.editMeta) el.editMeta.textContent = msg;
+      else el.answer.textContent = msg;
+    }
+  });
+}
 if (el.entityClose) el.entityClose.addEventListener("click", closeEntityPanel);
 if (el.entityDrawer) {
   el.entityDrawer.addEventListener("click", (e) => {
@@ -759,6 +1383,15 @@ if (el.entityDrawer) {
 }
 if (el.entitySave) el.entitySave.addEventListener("click", saveEntityComment);
 if (el.entityGemma) el.entityGemma.addEventListener("click", generateEntityComment);
+if (el.qaEngine) {
+  el.qaEngine.addEventListener("change", () => setQaEngine(el.qaEngine.value, el.qaEngine));
+}
+if (el.entityQaEngine) {
+  el.entityQaEngine.addEventListener("change", () =>
+    setQaEngine(el.entityQaEngine.value, el.entityQaEngine)
+  );
+}
+syncGenerateButtonLabel();
 document.addEventListener("click", (e) => {
   if (!el.ctxMenu || el.ctxMenu.hidden) return;
   if (el.ctxMenu.contains(e.target)) return;

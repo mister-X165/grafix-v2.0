@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 SEP = "<SEP>"
 TRIPLE_SEP = " ; "
@@ -14,6 +15,9 @@ class Triple:
     subject: str
     relation: str
     object: str
+    kind: str = "explicit"  # explicit | hidden | false
+    evidence: str = ""
+    confidence: float | None = None
 
     def encode(self) -> str:
         return f"{self.subject.strip()}{FIELD_SEP}{self.relation.strip()}{FIELD_SEP}{self.object.strip()}"
@@ -24,6 +28,42 @@ class Triple:
         if len(parts) != 3 or not all(parts):
             return None
         return cls(subject=parts[0], relation=parts[1], object=parts[2])
+
+    def as_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "subject": self.subject,
+            "relation": self.relation,
+            "object": self.object,
+            "kind": self.kind or "explicit",
+        }
+        if self.evidence:
+            out["evidence"] = self.evidence
+        if self.confidence is not None:
+            out["confidence"] = self.confidence
+        return out
+
+
+def normalize_edge_kind(value: Any) -> str:
+    """Map model output to explicit | hidden | false."""
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if raw in {"hidden", "latent", "implied", "implicit", "скрытая", "скрытый", "скрытое", "латентная", "подразумеваемая"}:
+        return "hidden"
+    if raw in {
+        "false",
+        "fake",
+        "spurious",
+        "invalid",
+        "denied",
+        "refuted",
+        "ложная",
+        "ложный",
+        "ложное",
+        "мнимая",
+        "опровергнутая",
+        "ошибочная",
+    }:
+        return "false"
+    return "explicit"
 
 
 def encode_example(text: str, triples: list[Triple]) -> str:

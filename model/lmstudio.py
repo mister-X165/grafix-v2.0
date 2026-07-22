@@ -19,18 +19,83 @@ DEFAULT_MAX_TOKENS = int(os.environ.get("LM_STUDIO_MAX_TOKENS", "500"))
 SYSTEM_PROMPT = """Ты — модуль извлечения графа знаний для программы Grafix.
 
 ЗАДАЧА:
-Прочитай пользовательский текст и извлеки все явные факты в виде троек (субъект, связь, объект).
+Прочитай текст и извлеки явные факты как тройки (субъект, связь, объект) для построения графа.
 
 ФОРМАТ ОТВЕТА (строго):
-Верни один JSON-объект и ничего больше. Без markdown, без ```, без пояснений до/после JSON.
-{"triples":[{"subject":"Имя","relation":"тип_связи","object":"Имя_или_значение"}]}
+Один JSON-объект и ничего больше. Без markdown, без ```, без текста до/после JSON.
+{"triples":[{"subject":"Имя","relation":"тип_связи","object":"Имя"}]}
 
 ПРАВИЛА:
-1. Только факты, которые прямо следуют из текста. Не додумывай.
-2. subject и object — канонические имена (именительный падеж), без лишних слов.
-3. relation — короткий snake_case на русском или латинице: работает_в, основал, знает, отец, находится_в, связан_с.
-4. Если фактов нет: {"triples":[]}
-5. Не пиши анализ текста прозой — только JSON.
+1. Только факты из текста. Не додумывай.
+2. subject и object — короткие канонические имена (организации, модели, люди, проекты, холдинги).
+   Не делай объектом длинную фразу («выпуск дешевых моделей») — лучше отдельная сущность или пропусти.
+3. relation — один короткий snake_case: работает_в, основал, производит, входит_в, создан_в, связан_с, торговая_марка.
+4. Не больше 30 троек. Если фактов больше — только самые важные для графа связей.
+5. JSON обязан быть полным: закрой все кавычки, скобки и массив triples.
+6. Если фактов нет: {"triples":[]}
+7. Не пиши анализ прозой — только JSON.
+"""
+
+# DeepSeek: explicit + hidden + false + contradictions (reasoning-aware extract)
+DEEPSEEK_SYSTEM_PROMPT = """Ты — модуль извлечения графа знаний для программы Grafix (движок DeepSeek).
+
+Вход: длинный связный текст. Он может содержать неочевидные факты и связи, сущности-дистракторы (упомянуты, но реально ни с чем не связаны) и намеренные противоречия (чаще временные). Твоя работа — извлечь достоверный граф, вскрыть скрытые связи и НЕ попасться на ловушки.
+
+═══ ПОРЯДОК РАБОТЫ (рассуждай про себя; в ответ вывод рассуждений не пиши) ═══
+1. Инвентаризация. Выпиши все сущности. Слей синонимы, местоимения, должности и описания к одному канону («он», «директор», «компания» → конкретное имя). Сущность без единой обоснованной связи с остальными помечай как дистрактор; связей ей НЕ выдумывай. Сомневаешься — не дистрактор.
+2. Явные факты. Извлеки только то, что прямо утверждается.
+3. Временная шкала. Восстанови порядок событий и даты, сверь на согласованность.
+4. Скрытые связи. Выведи то, что логически следует из фактов текста (паттерны ниже).
+5. Опровержения и противоречия. Отметь связи, которые текст объявляет ошибочными, и пары фактов, которые несовместимы.
+
+═══ СКРЫТАЯ СВЯЗЬ (kind:"hidden") ═══
+Связь, НЕ названная прямо, но однозначно выводимая ТОЛЬКО из фактов текста. Допустимые паттерны:
+- транзитивность: A→B и B→C ⟹ A→C;
+- общий узел: A и B оба связаны с C ⟹ возможная связь A–B;
+- разрешение личности: два разных упоминания = одна сущность;
+- следствие: из утверждённого факта неизбежно вытекает другой;
+- причинная цепочка, собранная из нескольких предложений.
+У каждой hidden-связи ОБЯЗАТЕЛЬНО поле evidence — какие именно факты текста её порождают. Нет вывода из текста — нет связи.
+
+═══ АНТИ-ГАЛЛЮЦИНАЦИЯ (жёстко) ═══
+- НИКОГДА не используй знания «извне» — только сам текст.
+- Соседство/совместное упоминание — это НЕ связь. Близость в тексте ничего не доказывает.
+- Сомневаешься, реальна ли связь → hidden с низким confidence либо опусти.
+- Не «чини» противоречия, выбирая правдоподобный вариант. Твоя задача — зафиксировать конфликт, а не разрешить его.
+- Дистракторам связей ради полноты не добавляй.
+
+═══ ПРОТИВОРЕЧИЯ (робастность) ═══
+Если два факта не могут быть истинны одновременно (несовместимый порядок или даты для одного события/сущности) — вынеси их в contradictions. Спорный факт при этом НЕ выводи как обычную explicit-тройку (иначе граф утверждает ложное ребро). Остальные, непротиворечивые факты извлекай как обычно.
+
+═══ ФОРМАТ ОТВЕТА (строго) ═══
+Ровно один JSON-объект и ничего кроме него. Без markdown, без обратных кавычек, без текста до/после. Двойные кавычки, без висячих запятых, без комментариев.
+
+{
+  "entities":[
+    {"name":"Канон","type":"person|org|place|event|concept|other","aliases":["…"],"distractor":false}
+  ],
+  "triples":[
+    {"subject":"Канон","relation":"snake_case","object":"Канон","kind":"explicit"},
+    {"subject":"Канон","relation":"snake_case","object":"Канон","kind":"hidden","evidence":"из [факт1] и [факт2] следует …","confidence":0.85},
+    {"subject":"Канон","relation":"snake_case","object":"Канон","kind":"false","evidence":"текст утверждает обратное: …"}
+  ],
+  "contradictions":[
+    {"type":"temporal|factual","statements":["утверждение A","утверждение B"],"entities":["…"],"note":"почему несовместимы","confidence":0.9}
+  ]
+}
+
+═══ ПРАВИЛА ПОЛЕЙ ═══
+1. subject/object — короткие канонические имена ИЗ entities. Никаких местоимений и описаний.
+2. relation — один короткий snake_case; направление subject→object держи единообразно; переиспользуй уже введённые типы связей.
+3. kind обязателен: explicit / hidden / false. evidence обязателен у hidden и false. confidence (0.0–1.0) — у hidden и contradictions.
+4. Для false передавай суть отвергаемой связи (например: causes, связан_с), а сам факт опровержения — в evidence.
+5. Приоритет — самые обоснованные выводы. Список слабыми догадками не добивай. Дубли не повторяй.
+6. Лимиты (тюнингуемые): explicit — без жёсткого потолка; hidden — до 12; false — до 10. Качество важнее количества.
+7. Если извлекать нечего: {"entities":[],"triples":[],"contradictions":[]}.
+8. Только JSON. Никакого анализа прозой.
+
+Микропример формата (схематично):
+{"entities":[{"name":"Орлов","type":"person","aliases":["директор"],"distractor":false},{"name":"Аркада","type":"org","aliases":[],"distractor":false},{"name":"Актив-X","type":"concept","aliases":[],"distractor":false}],"triples":[{"subject":"Орлов","relation":"руководит","object":"Аркада","kind":"explicit"},{"subject":"Орлов","relation":"контролирует","object":"Актив-X","kind":"hidden","evidence":"из [Орлов руководит Аркадой] и [Аркада владеет Активом-X] следует контроль","confidence":0.7}],"contradictions":[]}
 """
 
 ENTITY_COMMENT_SYSTEM = """Ты пишешь краткий комментарий об сущности графа знаний для программы Grafix.
@@ -47,6 +112,21 @@ ENTITY_COMMENT_SYSTEM_DOC_ONLY = """Ты пишешь краткий комме�
 Не выдумывай факты.
 """
 
+ENTITY_COMMENTS_BATCH_SYSTEM = """Ты — модуль комментариев графа знаний Grafix.
+
+КОНТЕКСТ: граф уже построен (список сущностей и троек дан ниже).
+ЗАДАЧА: строго для КАЖДОЙ сущности из списка напиши краткий комментарий по тексту документа и её связям.
+
+ФОРМАТ (строго):
+Один JSON-объект и ничего больше. Без markdown, без ```.
+{"comments":{"Имя сущности":"текст комментария"}}
+
+ПРАВИЛА:
+1. Ключ в comments — точное имя сущности из списка (без переименований).
+2. Комментарий: 1–3 предложения на русском, по делу. Без списков и заголовков.
+3. Только факты из документа и связей. Не додумывай.
+4. Обязательно закрой JSON. Не пропускай ни одну сущность из списка.
+"""
 
 QA_SYSTEM_PROMPT = """Ты — помощник Grafix. Отвечай на вопрос по приведённому тексту документа.
 Если даны результаты веб-поиска — можешь опираться и на них; кратко ссылайся на источники.
@@ -426,14 +506,20 @@ def parse_triples_flexible(content: str) -> list[Triple]:
         try:
             data = json.loads(cand)
         except json.JSONDecodeError:
-            # Fix trailing commas
+            # Fix trailing commas / truncated closing brackets
+            repaired = _repair_truncated_json(cand)
             try:
-                data = json.loads(re.sub(r",\s*([}\]])", r"\1", cand))
+                data = json.loads(re.sub(r",\s*([}\]])", r"\1", repaired))
             except json.JSONDecodeError:
                 continue
         triples = _triples_from_data(data)
         if triples:
             return triples
+
+    # Truncated model output: salvage complete triple objects via regex
+    salvaged = _salvage_triple_objects(text)
+    if salvaged:
+        return salvaged
 
     # Arrow / dash lines: A — rel → B
     lined = _parse_arrow_lines(content)
@@ -441,6 +527,124 @@ def parse_triples_flexible(content: str) -> list[Triple]:
         return lined
 
     return _parse_loose_lines(content)
+
+
+def _repair_truncated_json(text: str) -> str:
+    """Best-effort close of cut-off {"triples":[... JSON."""
+    s = text.strip()
+    if not s:
+        return s
+    # Drop trailing incomplete key/value fragment after last complete object
+    last_obj = s.rfind("}")
+    if last_obj >= 0 and ("[" in s or "{" in s):
+        s = s[: last_obj + 1]
+    # Balance brackets
+    opens_curly = s.count("{") - s.count("}")
+    opens_square = s.count("[") - s.count("]")
+    if opens_curly < 0 or opens_square < 0:
+        return text.strip()
+    # Remove dangling comma before close
+    s = re.sub(r",\s*$", "", s)
+    s += "]" * max(0, opens_square) + "}" * max(0, opens_curly)
+    return s
+
+
+def _salvage_triple_objects(text: str) -> list[Triple]:
+    """Pull complete {subject,relation,object} dicts from truncated JSON."""
+    out: list[Triple] = []
+    seen: set[tuple[str, str, str]] = set()
+    # Allow any key order inside a shallow object
+    obj_re = re.compile(r"\{([^{}]+)\}")
+    for block in obj_re.finditer(text):
+        body = block.group(0)
+        if "subject" not in body.lower() or "object" not in body.lower():
+            continue
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            try:
+                data = json.loads(body.replace("'", '"'))
+            except json.JSONDecodeError:
+                continue
+        t = _triple_from_item(data)
+        if not t:
+            continue
+        key = (t.subject, t.relation, t.object)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(t)
+    return out
+
+
+def parse_comments_flexible(content: str) -> dict[str, str]:
+    """Parse {"comments":{...}} or a flat name→text map from model output."""
+    if not content or not content.strip():
+        return {}
+
+    text = content.strip()
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.I)
+    if fence:
+        text = fence.group(1).strip()
+
+    candidates = _json_candidates(text)
+    for cand in candidates:
+        data = None
+        try:
+            data = json.loads(cand)
+        except json.JSONDecodeError:
+            repaired = _repair_truncated_json(cand)
+            try:
+                data = json.loads(re.sub(r",\s*([}\]])", r"\1", repaired))
+            except json.JSONDecodeError:
+                continue
+        comments = _comments_from_data(data)
+        if comments:
+            return comments
+
+    return _salvage_comment_pairs(text)
+
+
+def _comments_from_data(data: Any) -> dict[str, str]:
+    raw: Any = None
+    if isinstance(data, dict):
+        for key in ("comments", "entity_comments", "комментарии", "notes"):
+            if isinstance(data.get(key), dict):
+                raw = data[key]
+                break
+        if raw is None:
+            if "triples" in data:
+                return {}
+            raw = data
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        name = str(k or "").strip()
+        if not name or name.lower() in {"triples", "comments", "relations"}:
+            continue
+        if isinstance(v, dict):
+            v = v.get("comment") or v.get("text") or v.get("value") or ""
+        comment = str(v or "").strip()
+        if name and comment:
+            out[name] = comment
+    return out
+
+
+def _salvage_comment_pairs(text: str) -> dict[str, str]:
+    """Best-effort \"Name\": \"comment...\" pairs from truncated JSON."""
+    out: dict[str, str] = {}
+    pair_re = re.compile(r'"((?:\\.|[^"\\])+)"\s*:\s*"((?:\\.|[^"\\])*)"')
+    skip = {"triples", "comments", "subject", "relation", "object", "relations"}
+    for m in pair_re.finditer(text):
+        key = m.group(1).encode("utf-8").decode("unicode_escape", errors="ignore").strip()
+        val = m.group(2).encode("utf-8").decode("unicode_escape", errors="ignore").strip()
+        if not key or key.lower() in skip:
+            continue
+        if len(val) < 12:
+            continue
+        out[key] = val
+    return out
 
 
 def _json_candidates(text: str) -> list[str]:
@@ -504,8 +708,150 @@ def _triple_from_item(item: Any) -> Triple | None:
     o = _as_name(o)
     r = str(r or "").strip().replace(" ", "_")
     if s and r and o:
-        return Triple(s, r, o)
+        from model.triples import normalize_edge_kind
+
+        kind_raw = _pick(
+            item,
+            ("kind", "edge_kind", "link_kind", "link_type", "класс", "вид", "тип_ребра"),
+        )
+        evidence = str(
+            _pick(item, ("evidence", "reason", "rationale", "обоснование", "доказательство"))
+            or ""
+        ).strip()
+        conf_raw = _pick(item, ("confidence", "score", "prob", "уверенность"))
+        confidence: float | None = None
+        if conf_raw is not None and conf_raw != "":
+            try:
+                confidence = float(conf_raw)
+                if confidence < 0:
+                    confidence = 0.0
+                elif confidence > 1:
+                    confidence = 1.0
+            except (TypeError, ValueError):
+                confidence = None
+        return Triple(
+            s,
+            r,
+            o,
+            kind=normalize_edge_kind(kind_raw),
+            evidence=evidence,
+            confidence=confidence,
+        )
     return None
+
+
+def parse_extract_bundle(content: str) -> dict[str, Any]:
+    """Parse DeepSeek extract JSON: triples + entities + contradictions."""
+    triples = parse_triples_flexible(content)
+    entities: list[dict[str, Any]] = []
+    contradictions: list[dict[str, Any]] = []
+    if not content or not content.strip():
+        return {"triples": triples, "entities": entities, "contradictions": contradictions}
+
+    text = content.strip()
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.I)
+    if fence:
+        text = fence.group(1).strip()
+
+    data = None
+    for cand in _json_candidates(text):
+        try:
+            data = json.loads(cand)
+        except json.JSONDecodeError:
+            repaired = _repair_truncated_json(cand)
+            try:
+                data = json.loads(re.sub(r",\s*([}\]])", r"\1", repaired))
+            except json.JSONDecodeError:
+                continue
+        if isinstance(data, dict):
+            break
+        data = None
+
+    if isinstance(data, dict):
+        entities = _entities_from_data(data.get("entities"))
+        contradictions = _contradictions_from_data(data.get("contradictions"))
+    return {"triples": triples, "entities": entities, "contradictions": contradictions}
+
+
+def _entities_from_data(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = _as_name(_pick(item, ("name", "entity", "label", "id", "имя")))
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        etype = str(_pick(item, ("type", "kind", "category", "тип")) or "other").strip().lower()
+        if etype not in {"person", "org", "place", "event", "concept", "other"}:
+            etype = "other"
+        aliases_raw = _pick(item, ("aliases", "aka", "синонимы")) or []
+        aliases: list[str] = []
+        if isinstance(aliases_raw, list):
+            for a in aliases_raw:
+                s = str(a or "").strip()
+                if s and s.lower() != name.lower() and s not in aliases:
+                    aliases.append(s)
+        distractor = bool(_pick(item, ("distractor", "is_distractor", "дистрактор")))
+        out.append(
+            {
+                "name": name,
+                "type": etype,
+                "aliases": aliases[:12],
+                "distractor": distractor,
+            }
+        )
+    return out
+
+
+def _contradictions_from_data(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        ctype = str(_pick(item, ("type", "kind", "тип")) or "factual").strip().lower()
+        if ctype not in {"temporal", "factual"}:
+            ctype = "factual"
+        statements_raw = _pick(item, ("statements", "claims", "утверждения")) or []
+        statements: list[str] = []
+        if isinstance(statements_raw, list):
+            for s in statements_raw:
+                t = str(s or "").strip()
+                if t:
+                    statements.append(t)
+        ents_raw = _pick(item, ("entities", "names", "сущности")) or []
+        entities: list[str] = []
+        if isinstance(ents_raw, list):
+            for e in ents_raw:
+                n = str(e or "").strip()
+                if n and n not in entities:
+                    entities.append(n)
+        note = str(_pick(item, ("note", "reason", "explanation", "пояснение")) or "").strip()
+        conf_raw = _pick(item, ("confidence", "score"))
+        confidence: float | None = None
+        if conf_raw is not None and conf_raw != "":
+            try:
+                confidence = float(conf_raw)
+                confidence = max(0.0, min(1.0, confidence))
+            except (TypeError, ValueError):
+                confidence = None
+        if not statements and not note:
+            continue
+        row: dict[str, Any] = {
+            "type": ctype,
+            "statements": statements[:6],
+            "entities": entities[:12],
+            "note": note,
+        }
+        if confidence is not None:
+            row["confidence"] = confidence
+        out.append(row)
+    return out
 
 
 def _pick(item: dict, keys: tuple[str, ...]) -> Any:
