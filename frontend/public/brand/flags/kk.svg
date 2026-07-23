@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 40" width="24" height="16" aria-hidden="true">
+  <rect width="60" height="40" fill="#00AFCA"/>
+  <circle cx="30" cy="12" r="4.2" fill="#FEC50C"/>
+  <g fill="#FEC50C">
+    <path d="M30 7.2 L30.7 10.2 L33.8 10.2 L31.3 12.1 L32.2 15.2 L30 13.4 L27.8 15.2 L28.7 12.1 L26.2 10.2 L29.3 10.2 Z"/>
+  </g>
+  <!-- simplified steppe eagle under the sun -->
+  <path fill="#FEC50C" d="M18 22 C22 18, 26 17, 30 19 C34 17, 38 18, 42 22 C38 21, 34 22, 30 25 C26 22, 22 21, 18 22 Z"/>
+  <path fill="#FEC50C" d="M28 24 L30 28 L32 24 Z"/>
+</svg>

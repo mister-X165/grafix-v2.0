@@ -12,6 +12,7 @@ SUPPORTED_LANGUAGES: dict[str, dict[str, str]] = {
     "fr": {"flag": "🇫🇷", "name": "Français", "native": "Français"},
     "de": {"flag": "🇩🇪", "name": "Deutsch", "native": "Deutsch"},
     "sr": {"flag": "🇷🇸", "name": "Српски", "native": "Српски"},
+    "kk": {"flag": "🇰🇿", "name": "Қазақша", "native": "Қазақша"},
 }
 
 DEFAULT_LANGUAGE = "ru"
@@ -42,6 +43,10 @@ def normalize_language(value: Any) -> str:
         "srb": "sr",
         "serbian": "sr",
         "српски": "sr",
+        "kaz": "kk",
+        "kazakh": "kk",
+        "қазақша": "kk",
+        "қазақ": "kk",
     }
     code = aliases.get(base, base)
     return code if code in SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE
@@ -98,6 +103,13 @@ def language_instruction(code: str | None) -> str:
             "Mantém os nomes das entidades como no texto. "
             "relation — snake_case curto (trabalha_em, dirige, relacionado_com), de preferência em português. "
             "evidence, notas e comentários — em português."
+        )
+    if lang == "kk":
+        return (
+            f"ШЫҒЫС ТІЛІ: {name}. "
+            "Мән атауларын мәтіндегідей қалдыр. "
+            "relation — қысқа snake_case (жұмыс_істейді, басқарады, байланысты), мүмкіндігінше қазақша. "
+            "evidence, ескертпелер және пікірлер — қазақ тілінде (кирилл)."
         )
     # sr
     return (
