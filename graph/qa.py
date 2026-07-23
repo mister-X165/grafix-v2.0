@@ -45,9 +45,13 @@ def answer_question(
 ) -> dict[str, Any]:
     q = question.strip()
     engine = (engine or "gemma").strip().lower()
-    if engine not in {"gemma", "deepseek", "deepseek-v4", "microgpt", "auto"}:
+    if engine not in {"gemma", "deepseek", "deepseek-v4", "gigachat", "microgpt", "auto"}:
         engine = "gemma"
-    text_engine = engine if engine in {"deepseek", "deepseek-v4"} else "gemma"
+    text_engine = (
+        engine
+        if engine in {"deepseek", "deepseek-v4", "gigachat"}
+        else "gemma"
+    )
 
     if is_graph_question(q) and not web_search:
         result = _answer_graph(store, q, document_id)
@@ -71,6 +75,8 @@ def answer_question(
             if text_engine == "deepseek-v4"
             else "text_deepseek"
             if text_engine.startswith("deepseek")
+            else "text_gigachat"
+            if text_engine == "gigachat"
             else "text_gemma"
         )
 
@@ -110,6 +116,24 @@ def answer_question(
                     "web_error": web_payload.get("error"),
                     "debug": {"raw_response": "", "error": "OPENROUTER_API_KEY missing"},
                 }
+        elif text_engine == "gigachat":
+            from model.gigachat import GigaChatExtractor
+
+            client = GigaChatExtractor()
+            if not client.ready:
+                return {
+                    "answer": (
+                        "Выбран GigaChat, но нет GIGACHAT_CREDENTIALS. "
+                        "Задай Auth key в .env или переключи модель.\n\n" + GRAPH_HINT
+                    ),
+                    "highlight_nodes": [],
+                    "highlight_edges": [],
+                    "action": None,
+                    "qa_mode": qa_mode,
+                    "web_results": web_payload.get("results") or [],
+                    "web_error": web_payload.get("error"),
+                    "debug": {"raw_response": "", "error": "GIGACHAT_CREDENTIALS missing"},
+                }
         else:
             from model.lmstudio import LMStudioExtractor
 
@@ -118,7 +142,7 @@ def answer_question(
                 return {
                     "answer": (
                         "Вопрос похож на вопрос по тексту, но LM Studio выключен. "
-                        "Запусти Gemma-сервер, переключись на DeepSeek (OpenRouter) "
+                        "Запусти Gemma-сервер, переключись на DeepSeek / GigaChat "
                         "или спроси по шаблону графа.\n\n" + GRAPH_HINT
                     ),
                     "highlight_nodes": [],
@@ -136,7 +160,7 @@ def answer_question(
             web_results=web_payload.get("results") if has_web else None,
             **(
                 {"reasoning": bool(reasoning)}
-                if text_engine in {"deepseek", "deepseek-v4"}
+                if text_engine in {"deepseek", "deepseek-v4", "gigachat"}
                 else {}
             ),
         )

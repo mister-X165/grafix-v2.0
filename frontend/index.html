@@ -19,50 +19,100 @@
           width="280"
           height="64"
         />
-        <p class="brand-line">Всё связано</p>
+        <p class="brand-line" data-i18n="brand_line">Всё связано</p>
         <div class="hero-cta">
           <a class="btn primary" href="#workspace">
             <img src="/brand/icons/eye-white.svg" alt="" class="btn-ico" />
-            Открыть рабочую область
+            <span data-i18n="open_workspace">Открыть рабочую область</span>
           </a>
         </div>
       </header>
 
       <main id="workspace" class="workspace">
+        <div class="workspace-lang" id="workspace-lang" hidden>
+          <div class="lang-pick lang-pick-workspace" id="lang-pick">
+            <button
+              type="button"
+              class="lang-btn"
+              id="lang-btn"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              data-i18n-title="site_language_title"
+              title="Язык интерфейса"
+            >
+              <img class="lang-flag" src="/brand/flags/ru.svg" alt="" width="22" height="15" />
+              <span class="lang-name">Русский</span>
+              <span class="lang-caret" aria-hidden="true"></span>
+            </button>
+            <ul class="lang-menu" id="lang-menu" role="listbox" hidden>
+              <li role="option" data-lang="ru" aria-selected="true">
+                <img class="lang-flag" src="/brand/flags/ru.svg" alt="" width="22" height="15" />
+                <span class="lang-name">Русский</span>
+              </li>
+              <li role="option" data-lang="en">
+                <img class="lang-flag" src="/brand/flags/en.svg" alt="" width="22" height="15" />
+                <span class="lang-name">English</span>
+              </li>
+              <li role="option" data-lang="es">
+                <img class="lang-flag" src="/brand/flags/es.svg" alt="" width="22" height="15" />
+                <span class="lang-name">Español</span>
+              </li>
+              <li role="option" data-lang="pt">
+                <img class="lang-flag" src="/brand/flags/pt.svg" alt="" width="22" height="15" />
+                <span class="lang-name">Português</span>
+              </li>
+              <li role="option" data-lang="fr">
+                <img class="lang-flag" src="/brand/flags/fr.svg" alt="" width="22" height="15" />
+                <span class="lang-name">Français</span>
+              </li>
+              <li role="option" data-lang="de">
+                <img class="lang-flag" src="/brand/flags/de.svg" alt="" width="22" height="15" />
+                <span class="lang-name">Deutsch</span>
+              </li>
+              <li role="option" data-lang="sr">
+                <img class="lang-flag" src="/brand/flags/sr.svg" alt="" width="22" height="15" />
+                <span class="lang-name">Српски</span>
+              </li>
+            </ul>
+            <input type="hidden" id="language-select" value="ru" />
+          </div>
+        </div>
         <section class="panel panel-input">
           <h2>
             <img src="/brand/icons/cloud-gradient.svg" alt="" class="sec-ico" />
-            Текст
+            <span data-i18n="section_text">Текст</span>
           </h2>
           <label class="engine-pick">
-            <span>Модель анализа</span>
+            <span data-i18n="model_analyze">Модель анализа</span>
             <select id="engine-select">
-              <optgroup label="Локальные">
+              <optgroup data-i18n-label="engines_local" label="Локальные">
                 <option value="gemma" selected>Gemma</option>
                 <option value="microgpt">MicroGPT</option>
               </optgroup>
-              <optgroup label="Сетевые">
+              <optgroup data-i18n-label="engines_net" label="Сетевые">
                 <option value="deepseek">DeepSeek 3.2</option>
                 <option value="deepseek-v4">DeepSeek V4 Pro</option>
+                <option value="gigachat">GigaChat</option>
               </optgroup>
-              <optgroup label="Смешанный">
-                <option value="auto">Авто</option>
+              <optgroup data-i18n-label="engines_mixed" label="Смешанный">
+                <option value="auto" data-i18n="engine_auto">Авто</option>
               </optgroup>
             </select>
           </label>
-          <label class="opt-chip" for="reasoning-toggle" title="Thinking mode DeepSeek (3.2 / V4). Выключен — быстрее и стабильнее JSON">
+          <label class="opt-chip" for="reasoning-toggle" data-i18n-title="reasoning_title" title="Thinking / reasoning: DeepSeek и GigaChat. Выключен — быстрее">
             <input id="reasoning-toggle" type="checkbox" />
             <span class="opt-box" aria-hidden="true"></span>
-            <span class="opt-label">Reasoning</span>
+            <span class="opt-label" data-i18n="reasoning">Reasoning</span>
           </label>
           <div
             id="drop-zone"
             class="drop-zone"
             tabindex="0"
+            data-i18n-aria="drop_aria"
             aria-label="Загрузить документ в промпт"
           >
-            <textarea id="text-input" rows="7" placeholder="Вставьте текст для анализа или перетащите файл…"></textarea>
-            <div class="drop-overlay" aria-hidden="true">Отпустите файл сюда</div>
+            <textarea id="text-input" rows="7" data-i18n-placeholder="text_placeholder" placeholder="Вставьте текст для анализа или перетащите файл…"></textarea>
+            <div class="drop-overlay" aria-hidden="true" data-i18n="drop_overlay">Отпустите файл сюда</div>
           </div>
           <div class="text-actions">
             <label class="btn file-btn">
@@ -72,75 +122,105 @@
                 accept=".txt,.docx,.doc,.rtf,.pdf,text/plain,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/rtf,text/rtf"
                 hidden
               />
-              Загрузить файл
+              <span data-i18n="upload_file">Загрузить файл</span>
             </label>
             <label class="opt-chip" for="file-append">
               <input id="file-append" type="checkbox" />
               <span class="opt-box" aria-hidden="true"></span>
-              <span class="opt-label">Добавить поверх</span>
+              <span class="opt-label" data-i18n="file_append">Добавить поверх</span>
             </label>
             <span id="file-meta" class="meta file-meta"></span>
           </div>
           <button type="button" id="btn-analyze" class="btn primary">
             <span class="btn-spinner" aria-hidden="true"></span>
             <img src="/brand/icons/eye-white.svg" alt="" class="btn-ico" />
-            <span class="btn-label">Анализировать</span>
+            <span class="btn-label" data-i18n="analyze">Анализировать</span>
           </button>
-          <button type="button" id="btn-debug" class="btn">Debug-лог</button>
+          <details class="append-panel" id="append-panel">
+            <summary data-i18n="append_summary">Дополнить граф</summary>
+            <p class="meta append-hint" data-i18n="append_hint">
+              Новый текст → рёбра с типами (явная / скрытая / ложная). Склейка: DeepSeek по умолчанию или GigaChat (если выбран в модели анализа).
+            </p>
+            <textarea
+              id="append-text"
+              rows="4"
+              data-i18n-placeholder="append_placeholder"
+              placeholder="Дополнительный текст: новые факты, сущности, контекст…"
+            ></textarea>
+            <div class="append-actions">
+              <button type="button" id="btn-append" class="btn">
+                <span class="btn-spinner" aria-hidden="true"></span>
+                <span class="btn-label" data-i18n="append_add">Добавить в граф</span>
+              </button>
+              <button
+                type="button"
+                id="btn-bridge"
+                class="btn"
+                data-i18n-title="append_bridge_title"
+                title="Связать графы (DeepSeek по умолчанию, или GigaChat)"
+              >
+                <span class="btn-spinner" aria-hidden="true"></span>
+                <span class="btn-label" data-i18n="append_bridge">Связать графы</span>
+              </button>
+            </div>
+            <p id="append-meta" class="meta"></p>
+          </details>
+          <button type="button" id="btn-debug" class="btn" data-i18n="debug_log">Debug-лог</button>
           <p id="extract-meta" class="meta"></p>
 
           <h2>
             <img src="/brand/icons/chat-gradient.svg" alt="" class="sec-ico" />
-            Вопрос
+            <span data-i18n="section_ask">Вопрос</span>
           </h2>
-          <input id="question-input" type="text" placeholder="кто связан с Маша?" />
+          <input id="question-input" type="text" data-i18n-placeholder="ask_placeholder" placeholder="кто связан с Маша?" />
           <div class="qa-options">
             <label class="engine-pick qa-engine-pick">
-              <span>Модель ответа</span>
+              <span data-i18n="model_answer">Модель ответа</span>
               <select id="qa-engine-select">
-                <optgroup label="Локальные">
+                <optgroup data-i18n-label="engines_local" label="Локальные">
                   <option value="gemma" selected>Gemma</option>
                 </optgroup>
-                <optgroup label="Сетевые">
+                <optgroup data-i18n-label="engines_net" label="Сетевые">
                   <option value="deepseek">DeepSeek 3.2</option>
                   <option value="deepseek-v4">DeepSeek V4 Pro</option>
+                  <option value="gigachat">GigaChat</option>
                 </optgroup>
               </select>
             </label>
             <label class="opt-chip" for="ask-web-search">
               <input id="ask-web-search" type="checkbox" />
               <span class="opt-box" aria-hidden="true"></span>
-              <span class="opt-label">Искать в интернете</span>
+              <span class="opt-label" data-i18n="web_search">Искать в интернете</span>
             </label>
           </div>
           <button type="button" id="btn-ask" class="btn">
             <img src="/brand/icons/chat-white.svg" alt="" class="btn-ico" />
-            Спросить
+            <span data-i18n="ask">Спросить</span>
           </button>
           <pre id="answer" class="answer"></pre>
           <ul id="ask-web-sources" class="web-sources" hidden></ul>
 
           <h2>
             <img src="/brand/icons/check-gradient.svg" alt="" class="sec-ico" />
-            Правка
+            <span data-i18n="section_edit">Правка</span>
           </h2>
           <div id="edit-form-home">
             <div class="edit-form" id="edit-form">
               <label class="edit-field">
-                <span>Субъект</span>
-                <input id="edit-s" type="text" placeholder="например: Эльвира Ковач" autocomplete="off" />
+                <span data-i18n="subject">Субъект</span>
+                <input id="edit-s" type="text" data-i18n-placeholder="ph_subject" placeholder="например: Эльвира Ковач" autocomplete="off" />
               </label>
               <label class="edit-field">
-                <span>Связь</span>
-                <input id="edit-r" type="text" placeholder="например: основал" autocomplete="off" />
+                <span data-i18n="relation">Связь</span>
+                <input id="edit-r" type="text" data-i18n-placeholder="ph_relation" placeholder="например: основал" autocomplete="off" />
               </label>
               <label class="edit-field">
-                <span>Объект</span>
-                <input id="edit-o" type="text" placeholder="например: Северный меридиан" autocomplete="off" />
+                <span data-i18n="object">Объект</span>
+                <input id="edit-o" type="text" data-i18n-placeholder="ph_object" placeholder="например: Северный меридиан" autocomplete="off" />
               </label>
               <button type="button" id="btn-add" class="btn edit-submit">
                 <img src="/brand/icons/link-white.svg" alt="" class="btn-ico" />
-                Добавить связь
+                <span data-i18n="add_relation">Добавить связь</span>
               </button>
               <p id="edit-meta" class="meta"></p>
             </div>
@@ -151,7 +231,7 @@
           <div class="graph-header">
             <h2>
               <img src="/brand/icons/link-gradient.svg" alt="" class="sec-ico" />
-              Граф
+              <span data-i18n="section_graph">Граф</span>
             </h2>
             <div class="graph-header-actions">
               <span id="doc-id" class="meta"></span>
@@ -160,22 +240,22 @@
 
           <div id="graph-stage" class="graph-stage">
             <div class="graph-stage-bar">
-              <div class="view-tabs" role="tablist" aria-label="Вид графа">
-                <button type="button" class="view-tab is-active" data-view="graph" id="tab-view-graph">Граф</button>
-                <button type="button" class="view-tab" data-view="map" id="tab-view-map">Карта</button>
-                <button type="button" class="view-tab" data-view="globe" id="tab-view-globe">Глобус</button>
+              <div class="view-tabs" role="tablist" data-i18n-aria="view_tabs_aria" aria-label="Вид графа">
+                <button type="button" class="view-tab is-active" data-view="graph" id="tab-view-graph" data-i18n="tab_graph">Граф</button>
+                <button type="button" class="view-tab" data-view="map" id="tab-view-map" data-i18n="tab_map">Карта</button>
+                <button type="button" class="view-tab" data-view="globe" id="tab-view-globe" data-i18n="tab_globe">Глобус</button>
               </div>
               <div class="graph-stage-bar-actions">
                 <label class="history-pick" for="history-select">
-                  <span>Граф</span>
-                  <select id="history-select" aria-label="Выбрать сохранённый граф">
-                    <option value="">— история —</option>
+                  <span data-i18n="history_pick">Граф</span>
+                  <select id="history-select" data-i18n-aria="history_select_aria" aria-label="Выбрать сохранённый граф">
+                    <option value="" data-i18n="history_option_empty">— история —</option>
                   </select>
                 </label>
-                <button type="button" id="btn-save-graph" class="btn" title="Сохранить текущий граф">
+                <button type="button" id="btn-save-graph" class="btn" data-i18n="save" data-i18n-title="save_title" title="Сохранить текущий граф">
                   Сохранить
                 </button>
-                <button type="button" id="btn-graph-fs" class="btn" title="Полноэкранный режим (Esc — выход)">
+                <button type="button" id="btn-graph-fs" class="btn" data-i18n="fullscreen" data-i18n-title="fullscreen_title" title="Полноэкранный режим (Esc — выход)">
                   На весь экран
                 </button>
                 <button
@@ -183,6 +263,8 @@
                   id="btn-graph-fs-exit"
                   class="btn"
                   hidden
+                  data-i18n="collapse"
+                  data-i18n-title="collapse_title"
                   title="Выйти из полноэкранного режима"
                 >
                   Свернуть
@@ -192,21 +274,27 @@
 
             <details id="history-panel" class="history-panel" open>
               <summary class="history-summary">
-                <span>История</span>
+                <span data-i18n="history">История</span>
                 <span id="history-count" class="meta history-count"></span>
               </summary>
               <div class="history-body">
-                <div id="history-tabs" class="history-tabs" role="tablist" aria-label="Сохранённые графы"></div>
-                <p id="history-empty" class="meta history-empty">Пока пусто — проанализируйте текст или нажмите «Сохранить».</p>
+                <div id="history-tabs" class="history-tabs" role="tablist" data-i18n-aria="history_tabs_aria" aria-label="Сохранённые графы"></div>
+                <p id="history-empty" class="meta history-empty" data-i18n="history_empty">Пока пусто — проанализируйте текст или нажмите «Сохранить».</p>
               </div>
             </details>
 
             <div id="view-graph" class="geo-view is-active">
               <div id="graph"></div>
               <div id="edge-legend" class="edge-legend" hidden>
-                <span class="edge-leg edge-leg-explicit">явная</span>
-                <span class="edge-leg edge-leg-hidden">скрытая</span>
-                <span class="edge-leg edge-leg-false">ложная</span>
+                <span class="edge-leg edge-leg-explicit" data-i18n="leg_explicit">явная</span>
+                <span class="edge-leg edge-leg-hidden" data-i18n="leg_hidden">скрытая</span>
+                <span class="edge-leg edge-leg-false" data-i18n="leg_false">ложная</span>
+                <span class="edge-leg edge-leg-append" hidden data-i18n="leg_append">доп. явная</span>
+                <span class="edge-leg edge-leg-append-hidden" hidden data-i18n="leg_append_hidden">доп. скрытая</span>
+                <span class="edge-leg edge-leg-append-false" hidden data-i18n="leg_append_false">доп. ложная</span>
+                <span class="edge-leg edge-leg-bridge" hidden data-i18n="leg_bridge">склейка</span>
+                <span class="edge-leg edge-leg-bridge-hidden" hidden data-i18n="leg_bridge_hidden">склейка скрытая</span>
+                <span class="edge-leg edge-leg-bridge-false" hidden data-i18n="leg_bridge_false">склейка ложная</span>
               </div>
             </div>
 
@@ -283,26 +371,27 @@
             </div>
 
             <div id="ctx-menu" class="ctx-menu" hidden>
-              <button type="button" id="ctx-about" class="ctx-item">О сущности</button>
-              <button type="button" id="ctx-delete" class="ctx-item ctx-danger">Удалить узел</button>
+              <button type="button" id="ctx-about" class="ctx-item" data-i18n="ctx_about">О сущности</button>
+              <button type="button" id="ctx-delete" class="ctx-item ctx-danger" data-i18n="ctx_delete">Удалить узел</button>
             </div>
 
             <div id="entity-drawer" class="entity-drawer" hidden>
               <div class="entity-panel">
                 <div class="entity-head">
-                  <h2 id="entity-title">О сущности</h2>
-                  <button type="button" id="btn-entity-close" class="btn">Закрыть</button>
+                  <h2 id="entity-title" data-i18n="entity_about">О сущности</h2>
+                  <button type="button" id="btn-entity-close" class="btn" data-i18n="close">Закрыть</button>
                 </div>
-                <h3>Связи</h3>
+                <h3 data-i18n="relations">Связи</h3>
                 <ul id="entity-relations" class="entity-relations"></ul>
-                <h3>Комментарий</h3>
+                <h3 data-i18n="comment">Комментарий</h3>
                 <textarea
                   id="entity-comment"
                   rows="5"
+                  data-i18n-placeholder="comment_ph"
                   placeholder="Напиши сам или нажми «Сгенерировать» — текст появится здесь…"
                 ></textarea>
                 <div class="entity-actions">
-                  <button type="button" id="btn-entity-save" class="btn primary">Сохранить</button>
+                  <button type="button" id="btn-entity-save" class="btn primary" data-i18n="save">Сохранить</button>
                   <button type="button" id="btn-entity-gemma" class="btn">
                     <span class="btn-spinner" aria-hidden="true"></span>
                     <span class="btn-label">Сгенерировать (Gemma)</span>
@@ -310,21 +399,22 @@
                 </div>
                 <div class="qa-options entity-qa-options">
                   <label class="engine-pick qa-engine-pick">
-                    <span>Модель</span>
+                    <span data-i18n="model">Модель</span>
                     <select id="entity-qa-engine-select">
-                      <optgroup label="Локальные">
+                      <optgroup data-i18n-label="engines_local" label="Локальные">
                         <option value="gemma" selected>Gemma</option>
                       </optgroup>
-                      <optgroup label="Сетевые">
+                      <optgroup data-i18n-label="engines_net" label="Сетевые">
                         <option value="deepseek">DeepSeek 3.2</option>
                         <option value="deepseek-v4">DeepSeek V4 Pro</option>
+                        <option value="gigachat">GigaChat</option>
                       </optgroup>
                     </select>
                   </label>
                   <label class="opt-chip entity-web-toggle" for="entity-web-search">
                     <input id="entity-web-search" type="checkbox" />
                     <span class="opt-box" aria-hidden="true"></span>
-                    <span class="opt-label">Искать в интернете</span>
+                    <span class="opt-label" data-i18n="web_search">Искать в интернете</span>
                   </label>
                 </div>
                 <ul id="entity-web-sources" class="web-sources" hidden></ul>
@@ -336,14 +426,14 @@
             <div>
               <h3>
                 <img src="/brand/icons/person-gradient.svg" alt="" class="sec-ico sm" />
-                Юниты
+                <span data-i18n="units">Юниты</span>
               </h3>
               <ul id="unit-list" class="unit-list"></ul>
             </div>
             <div>
               <h3>
                 <img src="/brand/icons/arrow-gradient.svg" alt="" class="sec-ico sm" />
-                Потерянные связи
+                <span data-i18n="lost_edges">Потерянные связи</span>
               </h3>
               <ul id="lost-list" class="lost-list"></ul>
             </div>
@@ -365,14 +455,14 @@
     <div id="debug-drawer" class="debug-drawer" hidden>
       <div class="debug-panel">
         <div class="debug-head">
-          <h2>Debug-лог нейронки</h2>
-          <button type="button" id="btn-debug-close" class="btn">Закрыть</button>
+          <h2 data-i18n="debug_title">Debug-лог нейронки</h2>
+          <button type="button" id="btn-debug-close" class="btn" data-i18n="close">Закрыть</button>
         </div>
-        <h3>Промпт (user)</h3>
+        <h3 data-i18n="debug_prompt">Промпт (user)</h3>
         <pre id="debug-prompt" class="debug-pre"></pre>
-        <h3>Сырой ответ модели</h3>
+        <h3 data-i18n="debug_raw">Сырой ответ модели</h3>
         <pre id="debug-raw" class="debug-pre"></pre>
-        <h3>Разобранные тройки / ответ</h3>
+        <h3 data-i18n="debug_parsed">Разобранные тройки / ответ</h3>
         <pre id="debug-parsed" class="debug-pre"></pre>
         <p id="debug-error" class="meta"></p>
       </div>

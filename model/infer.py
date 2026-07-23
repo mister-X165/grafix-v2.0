@@ -475,15 +475,16 @@ class Extractor:
     def __init__(self, checkpoint: Path | None = None, use_heuristic_fallback: bool = True):
         self.lm = LMStudioExtractor()
         self.openrouter = OpenRouterExtractor()
+        self.gigachat = None
         self.neural = MicroGPTExtractor(checkpoint)
         self.use_heuristic_fallback = use_heuristic_fallback
         self.relations = _load_relation_vocab()
         self.gold = _load_gold_datasets()
         self.few_shot = _few_shot_examples(4)
 
-    def extract(self, text: str, engine: str = "gemma", *, reasoning: bool | None = None) -> dict:
+    def extract(self, text: str, engine: str = "gemma", *, reasoning: bool | None = None, language: str | None = None) -> dict:
         engine = (engine or "gemma").strip().lower()
-        if engine not in {"gemma", "deepseek", "deepseek-v4", "microgpt", "auto"}:
+        if engine not in {"gemma", "deepseek", "deepseek-v4", "gigachat", "microgpt", "auto"}:
             engine = "gemma"
 
         base = {
@@ -493,7 +494,108 @@ class Extractor:
             "engine": engine,
             "openrouter_ready": False,
             "openrouter_model": None,
+            "gigachat_ready": False,
+            "gigachat_model": None,
         }
+
+        if engine == "gigachat":
+            from model.gigachat import GigaChatExtractor
+
+            client = GigaChatExtractor()
+            self.gigachat = client
+            client.refresh()
+            gc_up = client.ready
+            base["gigachat_ready"] = gc_up
+            base["gigachat_model"] = client.resolved_model if gc_up else None
+            if not gc_up:
+                return {
+                    **base,
+                    "triples": [],
+                    "source": "empty",
+                    "hint": (
+                        "Выбран GigaChat, но нет ключа. "
+                        "Задай GIGACHAT_CREDENTIALS в .env и перезапусти backend."
+                    ),
+                    "debug": {
+                        "raw_response": "",
+                        "parsed_json": [],
+                        "prompt_user": "",
+                        "error": "GIGACHAT_CREDENTIALS missing",
+                        "model": None,
+                    },
+                }
+            dbg = client.extract_debug(
+                text, few_shot=self.few_shot, reasoning=reasoning, language=language
+            )
+            lm_triples = [
+                t for t in dbg["triples"] if _is_plausible_triple(t, require_vocab=False)
+            ]
+            lm_triples = repair_numeric_entities(lm_triples, text)
+            debug = {
+                "raw_response": dbg.get("raw_response") or "",
+                "parsed_json": dbg.get("parsed_json") or [],
+                "prompt_user": dbg.get("prompt_user") or "",
+                "error": dbg.get("error"),
+                "model": dbg.get("model"),
+                "reasoning": dbg.get("reasoning") or "",
+                "reasoning_effort": dbg.get("reasoning_effort"),
+                "reasoning_enabled": dbg.get("reasoning_enabled"),
+                "entities": dbg.get("entities") or [],
+                "contradictions": dbg.get("contradictions") or [],
+                "language": dbg.get("language") or language,
+            }
+            if lm_triples:
+                triples_payload = [t.as_dict() for t in lm_triples]
+                comments_dbg = client.batch_entity_comments(
+                    text, lm_triples, language=language
+                )
+                comments = comments_dbg.get("comments") or {}
+                debug["comments_raw"] = comments_dbg.get("raw_response") or ""
+                debug["comments_error"] = comments_dbg.get("error")
+                debug["comments_missing"] = comments_dbg.get("missing") or []
+                hint = None
+                if comments:
+                    hint = f"GigaChat: комментарии к {len(comments)} сущностям."
+                n_hidden = sum(1 for t in triples_payload if t.get("kind") == "hidden")
+                n_false = sum(1 for t in triples_payload if t.get("kind") == "false")
+                extras = []
+                if n_hidden or n_false:
+                    extras.append(f"скрытых: {n_hidden}, ложных: {n_false}")
+                if extras:
+                    extra = " · ".join(extras)
+                    hint = f"{hint} · {extra}" if hint else extra
+                return {
+                    **base,
+                    "gigachat_ready": True,
+                    "gigachat_model": dbg.get("model") or client.resolved_model,
+                    "triples": triples_payload,
+                    "entities_meta": debug.get("entities") or [],
+                    "contradictions": debug.get("contradictions") or [],
+                    "comments": comments,
+                    "source": "gigachat",
+                    "hint": hint,
+                    "debug": debug,
+                }
+            if dbg.get("ok") or dbg.get("raw_response"):
+                return {
+                    **base,
+                    "gigachat_ready": True,
+                    "gigachat_model": dbg.get("model") or client.resolved_model,
+                    "triples": [],
+                    "source": "empty",
+                    "hint": (
+                        "GigaChat ответил, но тройки не разобрались. "
+                        "Открой Debug-лог и посмотри сырой ответ."
+                    ),
+                    "debug": debug,
+                }
+            return {
+                **base,
+                "triples": [],
+                "source": "empty",
+                "hint": dbg.get("error") or "GigaChat не ответил.",
+                "debug": debug,
+            }
 
         if engine in {"deepseek", "deepseek-v4"}:
             from model.openrouter import openrouter_for_engine
@@ -521,7 +623,9 @@ class Extractor:
                         "model": None,
                     },
                 }
-            dbg = client.extract_debug(text, few_shot=self.few_shot, reasoning=reasoning)
+            dbg = client.extract_debug(
+                text, few_shot=self.few_shot, reasoning=reasoning, language=language
+            )
             lm_triples = [
                 t for t in dbg["triples"] if _is_plausible_triple(t, require_vocab=False)
             ]
@@ -537,11 +641,12 @@ class Extractor:
                 "reasoning_enabled": dbg.get("reasoning_enabled"),
                 "entities": dbg.get("entities") or [],
                 "contradictions": dbg.get("contradictions") or [],
+                "language": language,
             }
             if lm_triples:
                 triples_payload = [t.as_dict() for t in lm_triples]
                 comments_dbg = client.batch_entity_comments(
-                    text, lm_triples, reasoning=reasoning
+                    text, lm_triples, reasoning=reasoning, language=language
                 )
                 comments = comments_dbg.get("comments") or {}
                 debug["comments_raw"] = comments_dbg.get("raw_response") or ""

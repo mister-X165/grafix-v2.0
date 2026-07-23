@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
 import urllib.error
 import urllib.request
 from typing import Any
 
 from model.lmstudio import (
     DEFAULT_MAX_TOKENS,
+    DEEPSEEK_BRIDGE_SYSTEM,
     DEEPSEEK_SYSTEM_PROMPT,
     ENTITY_COMMENT_SYSTEM,
     ENTITY_COMMENT_SYSTEM_DOC_ONLY,
@@ -24,21 +30,26 @@ from model.lmstudio import (
     parse_extract_bundle,
     parse_triples_flexible,
 )
+from model.locale import language_instruction, normalize_language
 from model.triples import Triple
 
 DEFAULT_BASE = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 DEFAULT_MODEL = os.environ.get("OPENROUTER_MODEL", "deepseek/deepseek-v3.2")
 DEFAULT_MODEL_V4 = os.environ.get("OPENROUTER_MODEL_V4", "deepseek/deepseek-v4-pro")
 DEFAULT_TIMEOUT = float(os.environ.get("OPENROUTER_TIMEOUT", "300"))
-# Reasoning eats into max_tokens — keep headroom for the final answer
-DEFAULT_MAX_TOKENS_OR = int(os.environ.get("OPENROUTER_MAX_TOKENS", "4000"))
-# Extract + thinking: high effort can burn most of the budget on reasoning alone
+# First V4 iteration defaults (proxy-friendly)
+DEFAULT_MAX_TOKENS_OR = int(os.environ.get("OPENROUTER_MAX_TOKENS", "1200"))
 DEFAULT_EXTRACT_MAX_TOKENS = int(
-    os.environ.get("OPENROUTER_EXTRACT_MAX_TOKENS", "32000")
+    os.environ.get("OPENROUTER_EXTRACT_MAX_TOKENS", "4000")
 )
 DEFAULT_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 APP_TITLE = os.environ.get("OPENROUTER_APP_TITLE", "Grafix")
 APP_URL = os.environ.get("OPENROUTER_APP_URL", "https://github.com/komandantemerk/grafix")
+# win32: Python sockets often time out to some proxies while curl works
+_HTTP_MODE = (os.environ.get("OPENROUTER_HTTP") or "auto").strip().lower()
+_CURL_BIN = shutil.which("curl") or (
+    r"C:\Windows\System32\curl.exe" if sys.platform == "win32" else None
+)
 
 # DeepSeek 3.2 / V4 Pro: thinking mode via OpenRouter `reasoning`
 _REASONING_OFF = {"0", "false", "no", "off"}
@@ -63,6 +74,60 @@ DEEPSEEK_ENGINES = frozenset(OPENROUTER_MODELS)
 
 def is_deepseek_engine(engine: str | None) -> bool:
     return (engine or "").strip().lower() in DEEPSEEK_ENGINES
+
+
+def parse_bridge_json(content: str) -> dict[str, list[Triple]]:
+    """Parse bridge response into new_triples + bridge_triples."""
+    import re
+
+    from model.lmstudio import (
+        _json_candidates,
+        _repair_truncated_json,
+        _triple_from_item,
+    )
+
+    new_triples: list[Triple] = []
+    bridge_triples: list[Triple] = []
+    if not content or not content.strip():
+        return {"new_triples": new_triples, "bridge_triples": bridge_triples}
+
+    text = content.strip()
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.I)
+    if fence:
+        text = fence.group(1).strip()
+
+    data = None
+    for cand in _json_candidates(text):
+        try:
+            data = json.loads(cand)
+        except json.JSONDecodeError:
+            repaired = _repair_truncated_json(cand)
+            try:
+                data = json.loads(re.sub(r",\s*([}\]])", r"\1", repaired))
+            except json.JSONDecodeError:
+                continue
+        if isinstance(data, dict):
+            break
+        data = None
+
+    if not isinstance(data, dict):
+        return {"new_triples": new_triples, "bridge_triples": bridge_triples}
+
+    def _from_list(items: Any) -> list[Triple]:
+        out: list[Triple] = []
+        if not isinstance(items, list):
+            return out
+        for item in items:
+            t = _triple_from_item(item)
+            if t:
+                out.append(t)
+        return out
+
+    new_triples = _from_list(data.get("new_triples") or data.get("new") or [])
+    bridge_triples = _from_list(
+        data.get("bridge_triples") or data.get("bridges") or data.get("links") or []
+    )
+    return {"new_triples": new_triples, "bridge_triples": bridge_triples}
 
 
 def model_for_engine(engine: str | None) -> str:
@@ -102,6 +167,9 @@ class OpenRouterExtractor:
 
     def refresh(self) -> None:
         self.api_key = os.environ.get("OPENROUTER_API_KEY", self.api_key).strip()
+        self.base_url = (
+            os.environ.get("OPENROUTER_BASE_URL", self.base_url) or self.base_url
+        ).rstrip("/")
         self._available = None
 
     def ping(self) -> bool:
@@ -216,8 +284,8 @@ class OpenRouterExtractor:
             "max_tokens": payload.get("max_tokens"),
         }
 
-    def extract(self, text: str, few_shot: list[dict] | None = None, *, reasoning: bool | None = None) -> list[Triple]:
-        return self.extract_debug(text, few_shot=few_shot, reasoning=reasoning)["triples"]
+    def extract(self, text: str, few_shot: list[dict] | None = None, *, reasoning: bool | None = None, language: str | None = None, **_kwargs: Any) -> list[Triple]:
+        return self.extract_debug(text, few_shot=few_shot, reasoning=reasoning, language=language)["triples"]
 
     def extract_debug(
         self,
@@ -225,8 +293,13 @@ class OpenRouterExtractor:
         few_shot: list[dict] | None = None,
         *,
         reasoning: bool | None = None,
+        language: str | None = None,
+        **_kwargs: Any,
     ) -> dict[str, Any]:
-        messages: list[dict[str, str]] = [{"role": "system", "content": DEEPSEEK_SYSTEM_PROMPT}]
+        lang = normalize_language(language)
+        lang_block = language_instruction(lang)
+        system = DEEPSEEK_SYSTEM_PROMPT + "\n\n" + lang_block
+        messages: list[dict[str, str]] = [{"role": "system", "content": system}]
         for ex in few_shot or []:
             ex_text = (ex.get("text") or "").strip()
             triples = ex.get("triples") or []
@@ -255,6 +328,7 @@ class OpenRouterExtractor:
                     "+ contradictions. Ответ — только полный JSON вида "
                     '{"entities":[...],"triples":[...],"contradictions":[...]}. '
                     "Обязательно закрой массивы и объект. Рассуждения в ответ не пиши.\n\n"
+                    f"{lang_block}\n\n"
                     f"Текст:\n{text.strip()}"
                 ),
             }
@@ -287,6 +361,82 @@ class OpenRouterExtractor:
             "ok": bool(chat.get("ok")),
             "finish_reason": chat.get("finish_reason"),
             "prompt_user": messages[-1]["content"],
+            "language": lang,
+            "reasoning": chat.get("reasoning") or "",
+            "reasoning_effort": chat.get("reasoning_effort"),
+            "reasoning_enabled": chat.get("reasoning_enabled"),
+        }
+
+    def bridge_texts(
+        self,
+        base_text: str,
+        new_text: str,
+        existing_triples: list[Triple] | list[dict[str, Any]] | None = None,
+        *,
+        reasoning: bool | None = None,
+    ) -> dict[str, Any]:
+        """DeepSeek: extract new facts + bridge edges between base graph and new text."""
+        triple_lines: list[str] = []
+        for item in (existing_triples or [])[:80]:
+            if isinstance(item, Triple):
+                s, r, o = item.subject, item.relation, item.object
+                kind = getattr(item, "kind", "explicit") or "explicit"
+            else:
+                s = str((item or {}).get("subject") or "").strip()
+                r = str((item or {}).get("relation") or "").strip()
+                o = str((item or {}).get("object") or "").strip()
+                kind = str((item or {}).get("kind") or "explicit")
+            if s and o:
+                triple_lines.append(f"{s} —[{r}|{kind}]→ {o}")
+        base = _clip_text((base_text or "").strip(), 4500)
+        fresh = _clip_text((new_text or "").strip(), 4500)
+        user = (
+            "Склей базовый граф с новым текстом.\n\n"
+            f"Тройки базового графа:\n"
+            + ("\n".join(triple_lines) if triple_lines else "(пусто)")
+            + "\n\n"
+            f"БАЗОВЫЙ текст:\n{base or '(пусто)'}\n\n"
+            f"НОВЫЙ текст:\n{fresh or '(пусто)'}\n\n"
+            'Ответ — только JSON: {"new_triples":[...],"bridge_triples":[...]}'
+        )
+        messages = [
+            {"role": "system", "content": DEEPSEEK_BRIDGE_SYSTEM},
+            {"role": "user", "content": user},
+        ]
+        chat = self.chat(
+            messages,
+            temperature=0.05,
+            max_tokens=DEFAULT_EXTRACT_MAX_TOKENS,
+            reasoning=reasoning,
+            reasoning_effort=EXTRACT_REASONING_EFFORT if reasoning is not False else None,
+        )
+        raw = chat.get("raw") or ""
+        new_triples: list[Triple] = []
+        bridge_triples: list[Triple] = []
+        if chat.get("ok") and raw.strip():
+            parsed = parse_bridge_json(raw)
+            new_triples = parsed["new_triples"]
+            bridge_triples = parsed["bridge_triples"]
+        err = chat.get("error")
+        if chat.get("ok") and not new_triples and not bridge_triples and raw.strip():
+            fallback = parse_triples_flexible(raw)
+            if fallback:
+                new_triples = fallback
+            else:
+                err = (err + "; " if err else "") + "JSON склейки не разобран"
+        return {
+            "new_triples": new_triples,
+            "bridge_triples": bridge_triples,
+            "raw_response": raw,
+            "parsed_json": {
+                "new_triples": [t.as_dict() for t in new_triples],
+                "bridge_triples": [t.as_dict() for t in bridge_triples],
+            },
+            "error": err,
+            "model": chat.get("model"),
+            "ok": bool(chat.get("ok")),
+            "finish_reason": chat.get("finish_reason"),
+            "prompt_user": user,
             "reasoning": chat.get("reasoning") or "",
             "reasoning_effort": chat.get("reasoning_effort"),
             "reasoning_enabled": chat.get("reasoning_enabled"),
@@ -299,6 +449,8 @@ class OpenRouterExtractor:
         max_entities: int = 35,
         *,
         reasoning: bool | None = None,
+        language: str | None = None,
+        **_kwargs: Any,
     ) -> dict[str, Any]:
         """After graph extract: one comment per unique entity (strict coverage)."""
         entities: list[str] = []
@@ -537,29 +689,178 @@ class OpenRouterExtractor:
             "X-Title": APP_TITLE,
         }
 
-    def _get_json(self, path: str) -> dict[str, Any]:
-        req = urllib.request.Request(
-            f"{self.base_url}{path}",
-            headers=self._headers(),
-            method="GET",
-        )
-        with urllib.request.urlopen(req, timeout=min(self.timeout, 20)) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+    def _use_curl(self) -> bool:
+        mode = (os.environ.get("OPENROUTER_HTTP") or _HTTP_MODE or "auto").strip().lower()
+        curl_ok = bool(_CURL_BIN and os.path.isfile(_CURL_BIN))
+        if mode == "urllib":
+            return False
+        if mode == "curl":
+            return curl_ok
+        # auto: prefer curl on Windows (avoids WinError 10060 to some gateways)
+        return sys.platform == "win32" and curl_ok
 
-    def _post_json(self, path: str, payload: dict) -> dict[str, Any]:
-        body = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=body,
-            headers=self._headers(),
-            method="POST",
-        )
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        payload: dict | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        url = f"{self.base_url}{path}"
+        headers = self._headers()
+        wait = float(timeout if timeout is not None else self.timeout)
+        body = json.dumps(payload).encode("utf-8") if payload is not None else None
+
+        if self._use_curl():
+            last_err: Exception | None = None
+            for attempt in range(3):
+                try:
+                    return self._curl_json(method, url, headers, body, wait)
+                except Exception as curl_err:
+                    last_err = curl_err
+                    msg = str(curl_err).lower()
+                    retryable = any(
+                        x in msg
+                        for x in (
+                            "timed out",
+                            "timeout",
+                            "could not connect",
+                            "failed to connect",
+                            "connection reset",
+                            "10060",
+                            "curl exit 28",
+                            "curl: (28)",
+                            "curl: (7)",
+                            "curl: (35)",
+                        )
+                    )
+                    if not retryable or attempt >= 2:
+                        break
+                    time.sleep(1.2 * (attempt + 1))
+            mode = (os.environ.get("OPENROUTER_HTTP") or _HTTP_MODE or "auto").strip().lower()
+            if mode == "curl" and last_err is not None:
+                raise last_err
+            try:
+                return self._urllib_json(method, url, headers, body, wait)
+            except Exception:
+                if last_err is not None:
+                    raise last_err from None
+                raise
+
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+            return self._urllib_json(method, url, headers, body, wait)
+        except (TimeoutError, urllib.error.URLError, OSError) as e:
+            if _CURL_BIN and os.path.isfile(_CURL_BIN):
+                last_err: Exception = e
+                for attempt in range(3):
+                    try:
+                        return self._curl_json(method, url, headers, body, wait)
+                    except Exception as curl_err:
+                        last_err = curl_err
+                        time.sleep(1.2 * (attempt + 1))
+                raise last_err from e
+            raise e
+
+    def _urllib_json(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: bytes | None,
+        timeout: float,
+    ) -> dict[str, Any]:
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw) if raw.strip() else {}
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"OpenRouter HTTP {e.code}: {detail}") from e
+
+    def _curl_json(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: bytes | None,
+        timeout: float,
+    ) -> dict[str, Any]:
+        if not _CURL_BIN:
+            raise RuntimeError("curl не найден")
+        connect = min(45.0, max(10.0, timeout))
+        max_time = max(connect + 5.0, timeout)
+        cmd = [
+            _CURL_BIN,
+            "-sS",
+            "-X",
+            method.upper(),
+            url,
+            "--connect-timeout",
+            str(int(connect)),
+            "--max-time",
+            str(int(max_time)),
+            "-w",
+            "\n__GRAFIX_HTTP__%{http_code}",
+        ]
+        for key, val in headers.items():
+            cmd.extend(["-H", f"{key}: {val}"])
+
+        tmp_path: str | None = None
+        try:
+            if body is not None:
+                fd, tmp_path = tempfile.mkstemp(prefix="grafix_or_", suffix=".json")
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(body)
+                cmd.extend(["--data-binary", f"@{tmp_path}"])
+
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=max_time + 15,
+                check=False,
+            )
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip() or f"curl exit {proc.returncode}"
+            raise RuntimeError(f"OpenRouter curl failed: {err}")
+
+        out = proc.stdout or ""
+        marker = "\n__GRAFIX_HTTP__"
+        if marker not in out:
+            raise RuntimeError("OpenRouter curl: нет кода ответа")
+        raw, _, code_s = out.rpartition(marker)
+        try:
+            code = int(code_s.strip() or "0")
+        except ValueError:
+            code = 0
+        if code >= 400:
+            raise RuntimeError(f"OpenRouter HTTP {code}: {raw.strip()}")
+        if not raw.strip():
+            return {}
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"OpenRouter: не JSON ({code}): {raw[:400]}") from e
+        if not isinstance(data, dict):
+            raise RuntimeError(f"OpenRouter: ожидался объект JSON, получено {type(data).__name__}")
+        return data
+
+    def _get_json(self, path: str) -> dict[str, Any]:
+        return self._request_json("GET", path, None, timeout=min(self.timeout, 45))
+
+    def _post_json(self, path: str, payload: dict) -> dict[str, Any]:
+        return self._request_json("POST", path, payload, timeout=self.timeout)
 
 
 def _message_reasoning(data: dict[str, Any]) -> str:

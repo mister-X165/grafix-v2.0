@@ -69,18 +69,20 @@ class InMemoryGraphStore(GraphStore):
             s, r, o = t["subject"].strip(), t["relation"].strip(), t["object"].strip()
             if not s or not o:
                 continue
-            from model.triples import normalize_edge_kind
+            from model.triples import normalize_edge_kind, normalize_origin
 
             kind = normalize_edge_kind(t.get("kind"))
+            origin = normalize_origin(t.get("origin"))
             nodes[s] = {"id": s, "label": s, "type": "Entity"}
             nodes[o] = {"id": o, "label": o, "type": "Entity"}
             edge: dict[str, Any] = {
-                "id": f"{s}|{r}|{o}|{kind}",
+                "id": f"{s}|{r}|{o}|{kind}|{origin}",
                 "source": s,
                 "target": o,
                 "label": r,
                 "relation": r,
                 "kind": kind,
+                "origin": origin,
             }
             evidence = str(t.get("evidence") or "").strip()
             if evidence:
@@ -145,6 +147,7 @@ class InMemoryGraphStore(GraphStore):
                 "relation": e["relation"],
                 "neighbor": e["target"] if e["source"] == name else e["source"],
                 "kind": kind,
+                "origin": e.get("origin") or "base",
             }
             if e["source"] != name and e["target"] != name:
                 continue
@@ -221,6 +224,9 @@ class Neo4jGraphStore(GraphStore):
                 from model.triples import normalize_edge_kind
 
                 kind = normalize_edge_kind(t.get("kind"))
+                from model.triples import normalize_origin
+
+                origin = normalize_origin(t.get("origin"))
                 # Dynamic relationship type: sanitize to Neo4j identifier
                 rel_type = _rel_type(r)
                 session.run(
@@ -232,6 +238,7 @@ class Neo4jGraphStore(GraphStore):
                     MERGE (d)-[:HAS_ENTITY]->(b)
                     MERGE (a)-[rel:{rel_type}]->(b)
                     SET rel.label = $r, rel.document_id = $doc, rel.kind = $kind,
+                        rel.origin = $origin,
                         rel.evidence = $evidence, rel.confidence = $confidence
                     """,
                     doc=document_id,
@@ -239,6 +246,7 @@ class Neo4jGraphStore(GraphStore):
                     o=o,
                     r=r,
                     kind=kind,
+                    origin=origin,
                     evidence=str(t.get("evidence") or "").strip() or None,
                     confidence=(
                         float(t["confidence"])
@@ -258,7 +266,8 @@ class Neo4jGraphStore(GraphStore):
                     WHERE exists((:Document {id: $doc})-[:HAS_ENTITY]->(b))
                       AND r.document_id = $doc
                     RETURN a.name AS source, type(r) AS rel_type, r.label AS label,
-                           r.kind AS kind, r.evidence AS evidence, r.confidence AS confidence,
+                           r.kind AS kind, r.origin AS origin, r.evidence AS evidence,
+                           r.confidence AS confidence,
                            b.name AS target
                     """,
                     doc=document_id,
@@ -268,7 +277,8 @@ class Neo4jGraphStore(GraphStore):
                     """
                     MATCH (a:Entity)-[r]->(b:Entity)
                     RETURN a.name AS source, type(r) AS rel_type, r.label AS label,
-                           r.kind AS kind, r.evidence AS evidence, r.confidence AS confidence,
+                           r.kind AS kind, r.origin AS origin, r.evidence AS evidence,
+                           r.confidence AS confidence,
                            b.name AS target
                     """
                 )
@@ -282,16 +292,18 @@ class Neo4jGraphStore(GraphStore):
                 if tgt:
                     nodes[tgt] = {"id": tgt, "label": tgt, "type": "Entity"}
                     label = record["label"] or record["rel_type"] or "RELATED"
-                    from model.triples import normalize_edge_kind
+                    from model.triples import normalize_edge_kind, normalize_origin
 
                     kind = normalize_edge_kind(record["kind"])
+                    origin = normalize_origin(record.get("origin"))
                     edge = {
-                        "id": f"{src}|{label}|{tgt}|{kind}",
+                        "id": f"{src}|{label}|{tgt}|{kind}|{origin}",
                         "source": src,
                         "target": tgt,
                         "label": label,
                         "relation": label,
                         "kind": kind,
+                        "origin": origin,
                     }
                     if record.get("evidence"):
                         edge["evidence"] = record["evidence"]
@@ -361,7 +373,7 @@ class Neo4jGraphStore(GraphStore):
                     MATCH (a:Entity {name: $name})-[r]-(b:Entity)
                     WHERE r.document_id = $doc OR r.document_id IS NULL
                     RETURN a.name AS a, b.name AS b, type(r) AS t, r.label AS label,
-                           r.kind AS kind, r.evidence AS evidence, r.confidence AS confidence,
+                           r.kind AS kind, r.origin AS origin, r.evidence AS evidence, r.confidence AS confidence,
                            startNode(r) = a AS outgoing
                     """,
                     name=name,
@@ -372,13 +384,13 @@ class Neo4jGraphStore(GraphStore):
                     """
                     MATCH (a:Entity {name: $name})-[r]-(b:Entity)
                     RETURN a.name AS a, b.name AS b, type(r) AS t, r.label AS label,
-                           r.kind AS kind, r.evidence AS evidence, r.confidence AS confidence,
+                           r.kind AS kind, r.origin AS origin, r.evidence AS evidence, r.confidence AS confidence,
                            startNode(r) = a AS outgoing
                     """,
                     name=name,
                 )
             out = []
-            from model.triples import normalize_edge_kind
+            from model.triples import normalize_edge_kind, normalize_origin
 
             for rec in result:
                 rel = rec["label"] or rec["t"]
@@ -388,6 +400,7 @@ class Neo4jGraphStore(GraphStore):
                     "relation": rel,
                     "neighbor": rec["b"],
                     "kind": kind,
+                    "origin": normalize_origin(rec.get("origin")),
                 }
                 if rec.get("evidence"):
                     item["evidence"] = rec["evidence"]

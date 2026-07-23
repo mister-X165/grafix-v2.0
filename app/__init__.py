@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 
 
 def _load_dotenv() -> None:
-    """Load KEY=VALUE from .env without overwriting existing env vars."""
+    """Load KEY=VALUE from .env; fill missing or empty env vars."""
     path = ROOT / ".env"
     if not path.is_file():
         return
@@ -30,7 +30,10 @@ def _load_dotenv() -> None:
             key, _, val = line.partition("=")
             key = key.strip()
             val = val.strip().strip('"').strip("'")
-            if key and key not in os.environ:
+            if not key:
+                continue
+            # Allow .env to replace blank env stubs (common Windows/shell pitfall)
+            if key not in os.environ or not str(os.environ.get(key) or "").strip():
                 os.environ[key] = val
     except OSError:
         pass
@@ -70,10 +73,33 @@ DOC_MARKERS: dict[str, list[dict[str, Any]]] = {}
 class AnalyzeBody(BaseModel):
     text: str
     document_id: str | None = None
-    engine: str = "gemma"  # gemma | deepseek | deepseek-v4 | microgpt | auto
+    engine: str = "gemma"  # gemma | deepseek | deepseek-v4 | gigachat | microgpt | auto
     geo_graph: bool = True  # места/события → карта и глобус (DeepSeek)
     geo_engine: str = "deepseek-v4"  # deepseek | deepseek-v4
-    reasoning: bool = False  # DeepSeek thinking mode
+    reasoning: bool = False  # DeepSeek / GigaChat thinking mode
+    language: str = "ru"  # ru | en | es | pt | fr | de | sr
+
+
+class AppendAnalyzeBody(BaseModel):
+    """Extract new facts from extra text and merge into an existing graph."""
+
+    text: str
+    document_id: str | None = None
+    history_id: str | None = None
+    engine: str = "gemma"
+    reasoning: bool = False
+    language: str = "ru"
+
+
+class BridgeAnalyzeBody(BaseModel):
+    """Link base graph/text with new text (bridge + new edges). DeepSeek or GigaChat."""
+
+    text: str
+    document_id: str | None = None
+    history_id: str | None = None
+    document_text: str | None = None
+    engine: str = "deepseek-v4"  # deepseek | deepseek-v4 | gigachat
+    reasoning: bool = False
 
 
 class GeoGraphBody(BaseModel):
@@ -164,16 +190,117 @@ def _resolve_doc_id(document_id: str | None) -> str:
     return document_id or new_document_id()
 
 
-def _triples_from_edges(edges: list[dict[str, Any]]) -> list[dict[str, str]]:
-    out: list[dict[str, str]] = []
+def _triples_from_edges(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    from model.triples import normalize_edge_kind, normalize_origin
+
+    out: list[dict[str, Any]] = []
     for e in edges:
         s = (e.get("source") or "").strip()
         r = (e.get("relation") or e.get("label") or "").strip()
         o = (e.get("target") or "").strip()
         if s and o:
-            kind = str(e.get("kind") or "explicit").strip() or "explicit"
-            out.append({"subject": s, "relation": r, "object": o, "kind": kind})
+            kind = normalize_edge_kind(e.get("kind"))
+            origin = normalize_origin(e.get("origin"))
+            item: dict[str, Any] = {
+                "subject": s,
+                "relation": r,
+                "object": o,
+                "kind": kind,
+                "origin": origin,
+            }
+            evidence = str(e.get("evidence") or "").strip()
+            if evidence:
+                item["evidence"] = evidence
+            conf = e.get("confidence")
+            if conf is not None and conf != "":
+                try:
+                    item["confidence"] = float(conf)
+                except (TypeError, ValueError):
+                    pass
+            out.append(item)
     return out
+
+
+def _triple_key(t: dict[str, Any]) -> tuple[str, str, str, str]:
+    from model.triples import normalize_edge_kind
+
+    return (
+        str(t.get("subject") or "").strip().lower(),
+        str(t.get("relation") or "").strip().lower(),
+        str(t.get("object") or "").strip().lower(),
+        normalize_edge_kind(t.get("kind")),
+    )
+
+
+def _coerce_triple_dict(t: Any, *, origin: str = "base") -> dict[str, Any] | None:
+    from model.triples import Triple, normalize_edge_kind, normalize_origin
+
+    if isinstance(t, Triple):
+        d = t.as_dict()
+    elif isinstance(t, dict):
+        s = str(t.get("subject") or "").strip()
+        r = str(t.get("relation") or "").strip()
+        o = str(t.get("object") or "").strip()
+        if not s or not o:
+            return None
+        d = {
+            "subject": s,
+            "relation": r,
+            "object": o,
+            "kind": normalize_edge_kind(t.get("kind")),
+        }
+        evidence = str(t.get("evidence") or "").strip()
+        if evidence:
+            d["evidence"] = evidence
+        conf = t.get("confidence")
+        if conf is not None and conf != "":
+            try:
+                d["confidence"] = float(conf)
+            except (TypeError, ValueError):
+                pass
+        if t.get("origin"):
+            d["origin"] = normalize_origin(t.get("origin"))
+    else:
+        return None
+    if "origin" not in d:
+        d["origin"] = normalize_origin(origin)
+    else:
+        d["origin"] = normalize_origin(d.get("origin"))
+    d["kind"] = normalize_edge_kind(d.get("kind"))
+    return d
+
+
+def _merge_triples(
+    existing: list[dict[str, Any]],
+    incoming: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge triples; first occurrence wins (keeps base over append/bridge dupes)."""
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for src in (existing, incoming):
+        for raw in src:
+            item = _coerce_triple_dict(raw, origin="base")
+            if not item:
+                continue
+            key = _triple_key(item)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+    return merged
+
+
+def _append_document_text(base: str, extra: str) -> str:
+    base = (base or "").strip()
+    extra = (extra or "").strip()
+    if not extra:
+        return base
+    if not base:
+        return extra
+    sep = "\n\n---\n\n"
+    if extra in base:
+        return base
+    return f"{base}{sep}{extra}"
 
 
 def _comments_for(doc_id: str) -> dict[str, str]:
@@ -350,6 +477,7 @@ def root() -> str:
 
 @app.get("/api/health")
 def health() -> dict[str, object]:
+    from model.gigachat import GigaChatExtractor
     from model.lmstudio import LMStudioExtractor
     from model.openrouter import OpenRouterExtractor
 
@@ -357,6 +485,8 @@ def health() -> dict[str, object]:
     ready = lm.ping()
     or_client = OpenRouterExtractor()
     or_ready = or_client.ready
+    gc = GigaChatExtractor()
+    gc_ready = bool(gc.credentials)
     return {
         "status": "ok",
         "history_db": str(history.db_path),
@@ -375,6 +505,12 @@ def health() -> dict[str, object]:
             "base_url": or_client.base_url,
             "model": or_client.resolved_model if or_ready else None,
             "has_api_key": bool(or_client.api_key),
+        },
+        "gigachat": {
+            "configured": gc_ready,
+            "base_url": gc.base_url,
+            "model": gc.model if gc_ready else None,
+            "scope": gc.scope if gc_ready else None,
         },
     }
 
@@ -407,9 +543,19 @@ def analyze(body: AnalyzeBody) -> dict[str, Any]:
 
     doc_id = _resolve_doc_id(body.document_id)
     result = extractor.extract(
-        text, engine=body.engine or "gemma", reasoning=bool(body.reasoning)
+        text,
+        engine=body.engine or "gemma",
+        reasoning=bool(body.reasoning),
+        language=body.language,
     )
-    snap = store.upsert_triples(doc_id, text, result["triples"])
+    triples = []
+    for t in result.get("triples") or []:
+        item = _coerce_triple_dict(t, origin="base")
+        if item:
+            item["origin"] = "base"
+            triples.append(item)
+    result = {**result, "triples": triples}
+    snap = store.upsert_triples(doc_id, text, triples)
     DOC_TEXTS[doc_id] = text
     comments = result.get("comments")
     if isinstance(comments, dict):
@@ -490,6 +636,228 @@ def analyze(body: AnalyzeBody) -> dict[str, Any]:
         "history_id": saved["id"],
         "history": saved,
     }
+
+
+@app.post("/api/analyze/append")
+def analyze_append(body: AppendAnalyzeBody) -> dict[str, Any]:
+    """Extract triples from new text and add them to an existing document graph."""
+    new_text = (body.text or "").strip()
+    if not new_text:
+        raise HTTPException(status_code=400, detail="Пустой текст для дополнения")
+
+    doc_id = _resolve_doc_id(body.document_id)
+    snap = store.get_graph(doc_id)
+    existing = _triples_from_edges(snap.edges)
+    if not existing and not DOC_TEXTS.get(doc_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Сначала постройте граф («Анализировать»), затем дополняйте",
+        )
+
+    result = extractor.extract(
+        new_text,
+        engine=body.engine or "gemma",
+        reasoning=bool(body.reasoning),
+        language=body.language,
+    )
+    incoming: list[dict[str, Any]] = []
+    for t in result.get("triples") or []:
+        item = _coerce_triple_dict(t, origin="append")
+        if item:
+            item["origin"] = "append"
+            incoming.append(item)
+
+    merged = _merge_triples(existing, incoming)
+    combined_text = _append_document_text(DOC_TEXTS.get(doc_id, ""), new_text)
+    DOC_TEXTS[doc_id] = combined_text
+    snap2 = store.upsert_triples(doc_id, combined_text, merged)
+
+    hist_id = (body.history_id or "").strip() or None
+    saved = _persist_snapshot(
+        document_id=doc_id,
+        text=combined_text,
+        triples=merged,
+        nodes=snap2.nodes,
+        edges=snap2.edges,
+        engine=result.get("engine", body.engine),
+        source=result.get("source"),
+        history_id=hist_id,
+        comments=DOC_COMMENTS.get(doc_id),
+        markers=DOC_MARKERS.get(doc_id),
+    )
+    added = len(incoming)
+    # Count how many actually new vs merged-away
+    before = {_triple_key(t) for t in existing}
+    truly_new = sum(1 for t in incoming if _triple_key(t) not in before)
+    return {
+        "document_id": doc_id,
+        "text": combined_text,
+        "triples": merged,
+        "added_triples": incoming,
+        "added_count": truly_new,
+        "extracted_count": added,
+        "entities_meta": result.get("entities_meta") or [],
+        "contradictions": result.get("contradictions") or [],
+        "comments": DOC_COMMENTS.get(doc_id, {}),
+        "markers": list(_markers_for(doc_id)),
+        "source": result.get("source"),
+        "engine": result.get("engine", body.engine),
+        "model_ready": result.get("model_ready"),
+        "lm_ready": result.get("lm_ready"),
+        "lm_model": result.get("lm_model"),
+        "openrouter_ready": result.get("openrouter_ready"),
+        "openrouter_model": result.get("openrouter_model"),
+        "hint": (
+            f"дополнено: +{truly_new} новых рёбер (извлечено {added})"
+            + (f" · {result.get('hint')}" if result.get("hint") else "")
+        ),
+        "debug": result.get("debug") or {},
+        "nodes": snap2.nodes,
+        "edges": snap2.edges,
+        "history_id": saved["id"],
+        "history": saved,
+        "mode": "append",
+    }
+
+
+@app.post("/api/analyze/bridge")
+def analyze_bridge(body: BridgeAnalyzeBody) -> dict[str, Any]:
+    """DeepSeek / GigaChat: analyze base+new texts and add bridging edges onto the workspace."""
+    from model.gigachat import GigaChatExtractor
+    from model.openrouter import is_deepseek_engine, openrouter_for_engine
+
+    new_text = (body.text or "").strip()
+    if not new_text:
+        raise HTTPException(status_code=400, detail="Пустой новый текст для склейки")
+
+    engine = (body.engine or "deepseek-v4").strip().lower()
+    use_gigachat = engine == "gigachat"
+    if not use_gigachat and not is_deepseek_engine(engine):
+        raise HTTPException(
+            status_code=400,
+            detail="Склейка доступна через DeepSeek (deepseek / deepseek-v4) или GigaChat",
+        )
+
+    doc_id = _resolve_doc_id(body.document_id)
+    snap = store.get_graph(doc_id)
+    existing = _triples_from_edges(snap.edges)
+    base_text = (
+        (body.document_text if body.document_text is not None else None)
+        or DOC_TEXTS.get(doc_id)
+        or ""
+    ).strip()
+    if not existing and not base_text:
+        raise HTTPException(
+            status_code=400,
+            detail="Нужен готовый граф или базовый текст документа",
+        )
+
+    if use_gigachat:
+        client = GigaChatExtractor()
+        if not client.ready:
+            raise HTTPException(
+                status_code=503,
+                detail="GigaChat недоступен (проверьте GIGACHAT_CREDENTIALS)",
+            )
+        source = "gigachat-bridge"
+        engine_label = "GigaChat"
+    else:
+        client = openrouter_for_engine(engine)
+        if not client.ready:
+            raise HTTPException(
+                status_code=503,
+                detail="OpenRouter / DeepSeek недоступен (проверьте OPENROUTER_API_KEY)",
+            )
+        source = "openrouter-bridge"
+        engine_label = "DeepSeek"
+
+    bridged = client.bridge_texts(
+        base_text,
+        new_text,
+        existing_triples=existing,
+        reasoning=bool(body.reasoning),
+    )
+    if not bridged.get("ok") and bridged.get("error"):
+        raise HTTPException(
+            status_code=502,
+            detail=f"{engine_label} склейка не удалась: {bridged.get('error')}",
+        )
+
+    incoming: list[dict[str, Any]] = []
+    for t in bridged.get("new_triples") or []:
+        item = _coerce_triple_dict(t, origin="append")
+        if item:
+            item["origin"] = "append"
+            incoming.append(item)
+    for t in bridged.get("bridge_triples") or []:
+        item = _coerce_triple_dict(t, origin="bridge")
+        if item:
+            item["origin"] = "bridge"
+            incoming.append(item)
+
+    merged = _merge_triples(existing, incoming)
+    combined_text = _append_document_text(base_text, new_text)
+    DOC_TEXTS[doc_id] = combined_text
+    snap2 = store.upsert_triples(doc_id, combined_text, merged)
+
+    hist_id = (body.history_id or "").strip() or None
+    saved = _persist_snapshot(
+        document_id=doc_id,
+        text=combined_text,
+        triples=merged,
+        nodes=snap2.nodes,
+        edges=snap2.edges,
+        engine=engine,
+        source=source,
+        history_id=hist_id,
+        comments=DOC_COMMENTS.get(doc_id),
+        markers=DOC_MARKERS.get(doc_id),
+    )
+    before = {_triple_key(t) for t in existing}
+    new_n = sum(
+        1
+        for t in incoming
+        if t.get("origin") == "append" and _triple_key(t) not in before
+    )
+    bridge_n = sum(
+        1
+        for t in incoming
+        if t.get("origin") == "bridge" and _triple_key(t) not in before
+    )
+    out: dict[str, Any] = {
+        "document_id": doc_id,
+        "text": combined_text,
+        "triples": merged,
+        "added_triples": incoming,
+        "new_count": new_n,
+        "bridge_count": bridge_n,
+        "comments": DOC_COMMENTS.get(doc_id, {}),
+        "markers": list(_markers_for(doc_id)),
+        "source": source,
+        "engine": engine,
+        "model_ready": True,
+        "hint": f"склейка {engine_label}: +{new_n} новых, +{bridge_n} мостов",
+        "debug": {
+            "raw_response": bridged.get("raw_response") or "",
+            "parsed_json": bridged.get("parsed_json"),
+            "error": bridged.get("error"),
+            "reasoning": bridged.get("reasoning") or "",
+            "prompt_user": bridged.get("prompt_user") or "",
+        },
+        "nodes": snap2.nodes,
+        "edges": snap2.edges,
+        "history_id": saved["id"],
+        "history": saved,
+        "mode": "bridge",
+    }
+    if use_gigachat:
+        out["gigachat_ready"] = True
+        out["gigachat_model"] = bridged.get("model") or client.resolved_model
+    else:
+        out["openrouter_ready"] = True
+        out["openrouter_model"] = bridged.get("model") or client.resolved_model
+    return out
+
 
 @app.get("/api/graph")
 def get_graph(document_id: str | None = Query(default=None)) -> dict[str, Any]:
@@ -860,6 +1228,16 @@ def generate_entity_comment(body: EntityGenerateBody) -> dict[str, Any]:
                 detail="Нет OPENROUTER_API_KEY — задай ключ OpenRouter для DeepSeek",
             )
         label = "DeepSeek V4 Pro" if engine == "deepseek-v4" else "DeepSeek 3.2"
+    elif engine == "gigachat":
+        from model.gigachat import GigaChatExtractor
+
+        client = GigaChatExtractor()
+        if not client.ready:
+            raise HTTPException(
+                status_code=503,
+                detail="Нет GIGACHAT_CREDENTIALS — задай Auth key GigaChat в .env",
+            )
+        label = "GigaChat"
     else:
         from model.lmstudio import LMStudioExtractor
 
@@ -867,7 +1245,7 @@ def generate_entity_comment(body: EntityGenerateBody) -> dict[str, Any]:
         if not client.ping():
             raise HTTPException(
                 status_code=503,
-                detail="LM Studio выключен — запусти Gemma Local Server или выбери DeepSeek",
+                detail="LM Studio выключен — запусти Gemma Local Server или выбери DeepSeek / GigaChat",
             )
         label = "Gemma"
 
@@ -897,7 +1275,7 @@ def generate_entity_comment(body: EntityGenerateBody) -> dict[str, Any]:
         web_results=web_payload.get("results") if has_web else None,
         **(
             {"reasoning": bool(body.reasoning)}
-            if engine in {"deepseek", "deepseek-v4"}
+            if engine in {"deepseek", "deepseek-v4", "gigachat"}
             else {}
         ),
     )
@@ -915,7 +1293,9 @@ def generate_entity_comment(body: EntityGenerateBody) -> dict[str, Any]:
     payload = _entity_payload(doc_id, name)
     payload["comment"] = comment or payload["comment"]
     payload["generated"] = True
-    payload["engine"] = engine if engine in {"deepseek", "deepseek-v4"} else "gemma"
+    payload["engine"] = (
+        engine if engine in {"deepseek", "deepseek-v4", "gigachat"} else "gemma"
+    )
     payload["web_results"] = web_payload.get("results") or []
     payload["web_error"] = web_payload.get("error")
     debug_err = gem.get("error")

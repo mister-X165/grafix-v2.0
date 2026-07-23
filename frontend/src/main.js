@@ -12,6 +12,7 @@ import {
   setPlaceMode,
   syncMarkers,
 } from "./geo.js";
+import { applyI18n, LANG_META, t } from "./i18n.js";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 
@@ -49,6 +50,7 @@ function engineLabel(engine) {
   if (e === "microgpt") return "MicroGPT";
   if (e === "deepseek-v4") return "DeepSeek V4 Pro";
   if (e === "deepseek") return "DeepSeek 3.2";
+  if (e === "gigachat") return "GigaChat";
   if (e === "auto") return "Авто";
   return "Gemma";
 }
@@ -58,14 +60,188 @@ function isDeepseekEngine(engine) {
   return e === "deepseek" || e === "deepseek-v4";
 }
 
+function isBridgeEngine(engine) {
+  const e = (engine || "").toLowerCase();
+  return isDeepseekEngine(e) || e === "gigachat";
+}
+
+function resolveBridgeEngine(engine) {
+  const e = (engine || "").toLowerCase();
+  if (isBridgeEngine(e)) return e;
+  return "deepseek-v4";
+}
+
+/** Color matrix: origin × kind (explicit / hidden / false). */
+function edgeStyle(kind, origin) {
+  const k = (kind || "explicit").toLowerCase();
+  const o = (origin || "base").toLowerCase();
+  const styles = {
+    base: {
+      explicit: { color: "#4e6676", font: "#8a9aa6", dashes: false, width: 1 },
+      hidden: { color: "#2ec4b6", font: "#5fd9cd", dashes: [7, 5], width: 2.4 },
+      false: { color: "#ff5c8a", font: "#ff8aad", dashes: [4, 4], width: 2.6 },
+    },
+    append: {
+      explicit: { color: "#e9c46a", font: "#f0d78c", dashes: false, width: 2.3 },
+      hidden: { color: "#7eb563", font: "#a3d48a", dashes: [7, 5], width: 2.5 },
+      false: { color: "#f4a261", font: "#f7b980", dashes: [4, 4], width: 2.6 },
+    },
+    bridge: {
+      explicit: { color: "#a78bfa", font: "#c4b5fd", dashes: false, width: 2.5 },
+      hidden: { color: "#60a5fa", font: "#93c5fd", dashes: [7, 5], width: 2.5 },
+      false: { color: "#f472b6", font: "#f9a8d4", dashes: [4, 4], width: 2.6 },
+    },
+  };
+  const pack = styles[o] || styles.base;
+  return pack[k] || pack.explicit;
+}
+
+function isNetworkTextEngine(engine) {
+  const e = (engine || "").toLowerCase();
+  return isDeepseekEngine(e) || e === "gigachat";
+}
+
+const LANGS = LANG_META;
+
+function selectedLanguage() {
+  const v = (el.language && el.language.value) || "ru";
+  return LANGS[v] ? v : "ru";
+}
+
+function setLanguage(code, { persist = true } = {}) {
+  const lang = LANGS[code] ? code : "ru";
+  if (el.language) el.language.value = lang;
+  const meta = LANGS[lang];
+  if (el.langBtn && meta) {
+    const flag = el.langBtn.querySelector(".lang-flag");
+    const name = el.langBtn.querySelector(".lang-name");
+    if (flag) {
+      if (flag.tagName === "IMG") flag.src = meta.flag;
+      else flag.textContent = meta.flag;
+    }
+    if (name) name.textContent = meta.name;
+  }
+  if (el.langMenu) {
+    el.langMenu.querySelectorAll('[role="option"]').forEach((opt) => {
+      opt.setAttribute(
+        "aria-selected",
+        opt.getAttribute("data-lang") === lang ? "true" : "false"
+      );
+    });
+  }
+  applyI18n(lang);
+  syncGenerateButtonLabel();
+  if (el.analyze) {
+    const label = el.analyze.querySelector(".btn-label");
+    if (label && !el.analyze.classList.contains("is-loading")) {
+      label.textContent = t("analyze");
+    }
+  }
+  if (el.graphFs && !document.fullscreenElement) {
+    el.graphFs.textContent = t("fullscreen");
+  }
+  if (persist) {
+    try {
+      localStorage.setItem("grafix_language", lang);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  closeLangMenu();
+}
+
+function openLangMenu() {
+  if (!el.langMenu || !el.langBtn || !el.langPick) return;
+  el.langMenu.hidden = false;
+  el.langBtn.setAttribute("aria-expanded", "true");
+  el.langPick.classList.add("is-open");
+}
+
+function closeLangMenu() {
+  if (!el.langMenu || !el.langBtn || !el.langPick) return;
+  el.langMenu.hidden = true;
+  el.langBtn.setAttribute("aria-expanded", "false");
+  el.langPick.classList.remove("is-open");
+}
+
+function initLanguagePicker() {
+  let saved = "ru";
+  try {
+    saved = localStorage.getItem("grafix_language") || "ru";
+  } catch (_) {
+    saved = "ru";
+  }
+  setLanguage(saved, { persist: false });
+  if (el.langBtn) {
+    el.langBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (el.langMenu && el.langMenu.hidden) openLangMenu();
+      else closeLangMenu();
+    });
+  }
+  if (el.langMenu) {
+    el.langMenu.addEventListener("click", (e) => {
+      const opt = e.target.closest('[role="option"]');
+      if (!opt) return;
+      setLanguage(opt.getAttribute("data-lang"));
+    });
+  }
+  document.addEventListener("click", (e) => {
+    if (el.langPick && !el.langPick.contains(e.target)) closeLangMenu();
+  });
+  initWorkspaceLangVisibility();
+}
+
+function showWorkspaceLang(on) {
+  if (!el.workspaceLang) return;
+  el.workspaceLang.hidden = !on;
+  if (!on) closeLangMenu();
+}
+
+function initWorkspaceLangVisibility() {
+  const workspace = el.workspace || document.getElementById("workspace");
+  if (!workspace || !el.workspaceLang) return;
+
+  const reveal = () => showWorkspaceLang(true);
+
+  // Only after leaving the first screen (hero) — when workspace enters view
+  if (typeof IntersectionObserver === "function") {
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting && entry.intersectionRatio > 0.12) {
+            reveal();
+          } else if (!entry.isIntersecting && window.scrollY < 80) {
+            showWorkspaceLang(false);
+          }
+        }
+      },
+      { root: null, threshold: [0.12, 0.25] }
+    );
+    io.observe(workspace);
+  }
+
+  // Click «Open workspace» / hash navigation
+  document.querySelectorAll('a[href="#workspace"]').forEach((a) => {
+    a.addEventListener("click", () => {
+      // show after scroll settles into workspace
+      setTimeout(reveal, 350);
+    });
+  });
+  if (location.hash === "#workspace") reveal();
+  window.addEventListener("hashchange", () => {
+    if (location.hash === "#workspace") reveal();
+  });
+}
+
 function selectedTextEngine() {
   const sel = el.qaEngine || el.entityQaEngine;
   const e = (sel ? sel.value : "gemma") || "gemma";
-  return isDeepseekEngine(e) ? e : "gemma";
+  return isNetworkTextEngine(e) ? e : "gemma";
 }
 
 function setQaEngine(value, source) {
-  const next = isDeepseekEngine(value) ? value : "gemma";
+  const next = isNetworkTextEngine(value) ? value : "gemma";
   if (el.qaEngine && source !== el.qaEngine) el.qaEngine.value = next;
   if (el.entityQaEngine && source !== el.entityQaEngine) el.entityQaEngine.value = next;
   syncGenerateButtonLabel();
@@ -76,15 +252,25 @@ function syncGenerateButtonLabel() {
   if (!btn || btn.classList.contains("is-loading")) return;
   const label = btn.querySelector(".btn-label");
   if (label) {
-    label.textContent = `Сгенерировать (${engineLabel(selectedTextEngine())})`;
+    label.textContent = `${t("generate")} (${engineLabel(selectedTextEngine())})`;
   }
 }
 
 const el = {
   text: document.getElementById("text-input"),
   analyze: document.getElementById("btn-analyze"),
+  appendText: document.getElementById("append-text"),
+  appendBtn: document.getElementById("btn-append"),
+  bridgeBtn: document.getElementById("btn-bridge"),
+  appendMeta: document.getElementById("append-meta"),
   meta: document.getElementById("extract-meta"),
   engine: document.getElementById("engine-select"),
+  language: document.getElementById("language-select"),
+  langBtn: document.getElementById("lang-btn"),
+  langMenu: document.getElementById("lang-menu"),
+  langPick: document.getElementById("lang-pick"),
+  workspaceLang: document.getElementById("workspace-lang"),
+  workspace: document.getElementById("workspace"),
   qaEngine: document.getElementById("qa-engine-select"),
   entityQaEngine: document.getElementById("entity-qa-engine-select"),
   reasoningToggle: document.getElementById("reasoning-toggle"),
@@ -337,6 +523,13 @@ function fillEntityPanel(data) {
       const kind = (rel.kind || "explicit").toLowerCase();
       if (kind === "hidden") li.classList.add("rel-hidden");
       if (kind === "false") li.classList.add("rel-false");
+      const origin = (rel.origin || "base").toLowerCase();
+      if (origin === "append") li.classList.add("rel-append");
+      if (origin === "bridge") li.classList.add("rel-bridge");
+      if (kind === "hidden" && origin === "append") li.classList.add("rel-append-hidden");
+      if (kind === "false" && origin === "append") li.classList.add("rel-append-false");
+      if (kind === "hidden" && origin === "bridge") li.classList.add("rel-bridge-hidden");
+      if (kind === "false" && origin === "bridge") li.classList.add("rel-bridge-false");
       li.textContent = formatRelation(rel, entityName);
       el.entityRelations.appendChild(li);
     }
@@ -679,8 +872,8 @@ function syncGraphFsUi() {
   const on = isGraphFullscreen();
   if (el.graphFs) {
     el.graphFs.hidden = on;
-    el.graphFs.textContent = "На весь экран";
-    el.graphFs.title = "Полноэкранный режим (Esc — выход)";
+    el.graphFs.textContent = t("fullscreen");
+    el.graphFs.title = t("fullscreen_title");
   }
   if (el.graphFsExit) el.graphFsExit.hidden = !on;
   if (el.graphStage) el.graphStage.classList.toggle("is-fullscreen", on);
@@ -1018,26 +1211,17 @@ function drawGraph(nodes, edges) {
       const showRed = !off && linked;
       const hi = highlightEdges.has(e.id);
       const kind = (e.kind || "explicit").toLowerCase();
+      const origin = (e.origin || "base").toLowerCase();
       const isHidden = kind === "hidden";
       const isFalse = kind === "false";
-      let baseColor = "#4e6676";
-      let fontColor = "#8a9aa6";
-      let dashes = false;
-      let width = 1;
+      const style = edgeStyle(kind, origin);
+      let baseColor = style.color;
+      let fontColor = style.font;
+      let dashes = style.dashes;
+      let width = style.width;
       let label = e.label || e.relation || "";
-      if (isHidden) {
-        baseColor = "#2ec4b6";
-        fontColor = "#5fd9cd";
-        dashes = [7, 5];
-        width = 2.4;
-        if (label && !/скрыт/i.test(label)) label = `${label} · скрытая`;
-      } else if (isFalse) {
-        baseColor = "#ff5c8a";
-        fontColor = "#ff8aad";
-        dashes = [4, 4];
-        width = 2.6;
-        if (label && !/ложн/i.test(label)) label = `${label} · ложная`;
-      }
+      if (isHidden && label && !/скрыт/i.test(label)) label = `${label} · скрытая`;
+      if (isFalse && label && !/ложн/i.test(label)) label = `${label} · ложная`;
       return {
         id: e.id,
         from: e.source,
@@ -1049,6 +1233,7 @@ function drawGraph(nodes, edges) {
             ? `confidence: ${e.confidence}`
             : "",
           kind !== "explicit" ? `kind: ${kind}` : "",
+          origin !== "base" ? `origin: ${origin}` : "",
         ]
           .filter(Boolean)
           .join("\n") || undefined,
@@ -1063,7 +1248,7 @@ function drawGraph(nodes, edges) {
               : hi
                 ? "#dadee1"
                 : baseColor,
-          highlight: showRed ? "#e07070" : isFalse ? "#ff7aa0" : isHidden ? "#5fd9cd" : "#dadee1",
+          highlight: showRed ? "#e07070" : style.font,
           opacity: off ? 0.1 : 1,
         },
         font: {
@@ -1095,7 +1280,24 @@ function drawGraph(nodes, edges) {
   }
 
   if (el.edgeLegend) {
-    el.edgeLegend.hidden = !(graphEdges || []).length;
+    const edges = graphEdges || [];
+    el.edgeLegend.hidden = !edges.length;
+    const has = (origin, kind) =>
+      edges.some(
+        (e) =>
+          (e.origin || "base") === origin &&
+          (e.kind || "explicit").toLowerCase() === kind
+      );
+    const show = (sel, on) => {
+      const node = el.edgeLegend.querySelector(sel);
+      if (node) node.hidden = !on;
+    };
+    show(".edge-leg-append", has("append", "explicit"));
+    show(".edge-leg-append-hidden", has("append", "hidden"));
+    show(".edge-leg-append-false", has("append", "false"));
+    show(".edge-leg-bridge", has("bridge", "explicit"));
+    show(".edge-leg-bridge-hidden", has("bridge", "hidden"));
+    show(".edge-leg-bridge-false", has("bridge", "false"));
   }
 
   if (network && !networkBound) {
@@ -1149,7 +1351,7 @@ el.analyze.addEventListener("click", async () => {
   el.analyze.disabled = true;
   el.analyze.classList.add("is-loading");
   const label = el.analyze.querySelector(".btn-label");
-  if (label) label.textContent = "Генерация…";
+  if (label) label.textContent = t("analyzing");
   try {
     documentText = el.text.value;
     const data = await post("/api/analyze", {
@@ -1159,11 +1361,15 @@ el.analyze.addEventListener("click", async () => {
       geo_graph: el.mapGeoAuto ? el.mapGeoAuto.checked : true,
       geo_engine: selectedGeoEngine(),
       reasoning: selectedReasoning(),
+      language: selectedLanguage(),
     });
     const eng = engineLabel(data.engine);
     el.meta.textContent =
       `модель: ${eng}` +
-      (selectedReasoning() && isDeepseekEngine(data.engine) ? " · reasoning" : "") +
+      (selectedReasoning() && (isDeepseekEngine(data.engine) || data.engine === "gigachat")
+        ? " · reasoning"
+        : "") +
+      ` · ${t("site_language").toLowerCase()}: ${LANGS[selectedLanguage()]?.name || selectedLanguage()}` +
       ` · источник: ${data.source} · троек: ${data.triples.length}` +
       (data.comments && Object.keys(data.comments).length
         ? ` · комментариев: ${Object.keys(data.comments).length}`
@@ -1182,6 +1388,11 @@ el.analyze.addEventListener("click", async () => {
         : data.engine === "deepseek" || data.engine === "deepseek-v4"
           ? " · DeepSeek: нет ключа"
           : "") +
+      (data.gigachat_ready
+        ? ` · GigaChat: ${data.gigachat_model || "ok"}`
+        : data.engine === "gigachat"
+          ? " · GigaChat: нет ключа"
+          : "") +
       (data.model_ready ? " · MicroGPT ок" : "");
     if (data.hint) {
       el.meta.textContent += " — " + data.hint;
@@ -1194,9 +1405,83 @@ el.analyze.addEventListener("click", async () => {
   } finally {
     el.analyze.disabled = false;
     el.analyze.classList.remove("is-loading");
-    if (label) label.textContent = "Анализировать";
+    if (label) label.textContent = t("analyze");
   }
 });
+
+async function runAppendOrBridge(mode) {
+  const text = (el.appendText && el.appendText.value) || "";
+  if (!text.trim()) {
+    if (el.appendMeta) el.appendMeta.textContent = t("append_need_text");
+    return;
+  }
+  if (!documentId && !(graphEdges && graphEdges.length)) {
+    if (el.appendMeta) {
+      el.appendMeta.textContent = t("append_need_graph");
+    }
+    return;
+  }
+  const btn = mode === "bridge" ? el.bridgeBtn : el.appendBtn;
+  const label = btn && btn.querySelector(".btn-label");
+  const idle = mode === "bridge" ? t("append_bridge") : t("append_add");
+  if (el.appendMeta) {
+    el.appendMeta.textContent =
+      mode === "bridge" ? t("append_bridging_meta") : t("append_adding_meta");
+  }
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.add("is-loading");
+  }
+  if (label) label.textContent = mode === "bridge" ? t("append_bridging") : t("append_adding");
+  try {
+    const endpoint =
+      mode === "bridge" ? "/api/analyze/bridge" : "/api/analyze/append";
+    const payload = {
+      text: text.trim(),
+      document_id: documentId,
+      history_id: historyId,
+      reasoning: selectedReasoning(),
+      language: selectedLanguage(),
+    };
+    if (mode === "bridge") {
+      payload.engine = resolveBridgeEngine(el.engine && el.engine.value);
+      payload.document_text = documentText || (el.text && el.text.value) || "";
+    } else {
+      payload.engine = el.engine ? el.engine.value : "gemma";
+    }
+    const data = await post(endpoint, payload);
+    if (el.text && data.text) el.text.value = data.text;
+    documentText = data.text || documentText;
+    setDebug(data.debug, data.triples);
+    applyPayload(data);
+    await refreshHistoryList();
+    if (el.appendMeta) {
+      el.appendMeta.textContent =
+        data.hint ||
+        (mode === "bridge"
+          ? `склейка: +${data.new_count || 0} новых, +${data.bridge_count || 0} мостов`
+          : `добавлено рёбер: ${data.added_count ?? 0}`);
+    }
+    if (el.meta && data.hint) {
+      el.meta.textContent = data.hint;
+    }
+  } catch (err) {
+    if (el.appendMeta) el.appendMeta.textContent = String(err.message || err);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove("is-loading");
+    }
+    if (label) label.textContent = idle;
+  }
+}
+
+if (el.appendBtn) {
+  el.appendBtn.addEventListener("click", () => runAppendOrBridge("append"));
+}
+if (el.bridgeBtn) {
+  el.bridgeBtn.addEventListener("click", () => runAppendOrBridge("bridge"));
+}
 
 el.ask.addEventListener("click", async () => {
   try {
@@ -1221,11 +1506,15 @@ el.ask.addEventListener("click", async () => {
           ? useWeb
             ? "[DeepSeek 3.2 + веб]\n"
             : "[DeepSeek 3.2 по тексту]\n"
-          : data.qa_mode === "text_gemma"
+          : data.qa_mode === "text_gigachat"
             ? useWeb
-              ? "[Gemma + веб]\n"
-              : "[Gemma по тексту]\n"
-            : "[Граф]\n";
+              ? "[GigaChat + веб]\n"
+              : "[GigaChat по тексту]\n"
+            : data.qa_mode === "text_gemma"
+              ? useWeb
+                ? "[Gemma + веб]\n"
+                : "[Gemma по тексту]\n"
+              : "[Граф]\n";
     el.answer.textContent = modeLabel + (data.answer || "");
     renderWebSources(el.askWebSources, data.web_results, data.web_error);
     if (data.debug) {
@@ -1478,4 +1767,5 @@ el.text.value =
   "Тимур Асланов — сотрудник Гельвеций-Прайм и соавтор патента Северного меридиана. " +
   "Освальд Бэр — бенефициар Фонда «Тихая гавань».";
 
+initLanguagePicker();
 refreshHistoryList();

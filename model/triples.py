@@ -66,6 +66,16 @@ def normalize_edge_kind(value: Any) -> str:
     return "explicit"
 
 
+def normalize_origin(value: Any) -> str:
+    """Map edge provenance: base | append | bridge."""
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if raw in {"append", "new", "addon", "added", "доп", "дополнение", "новый"}:
+        return "append"
+    if raw in {"bridge", "merge", "link", "склейка", "мост", "связь"}:
+        return "bridge"
+    return "base"
+
+
 def encode_example(text: str, triples: list[Triple]) -> str:
     body = TRIPLE_SEP.join(t.encode() for t in triples)
     return f"{text.strip()}{SEP}{body}"
