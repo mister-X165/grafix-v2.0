@@ -77,7 +77,7 @@ class AnalyzeBody(BaseModel):
     geo_graph: bool = True  # места/события → карта и глобус (DeepSeek)
     geo_engine: str = "deepseek-v4"  # deepseek | deepseek-v4
     reasoning: bool = False  # DeepSeek / GigaChat thinking mode
-    language: str = "ru"  # ru | en | es | pt | fr | de | sr | kk | vi
+    language: str = "ru"  # ru | en | es | pt | fr | de | sr | kk | tt | vi
 
 
 class AppendAnalyzeBody(BaseModel):

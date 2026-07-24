@@ -850,6 +850,12 @@ textarea {
   gap: 0.45rem;
 }
 
+#btn-graph-labels.is-active {
+  border-color: rgba(218, 222, 225, 0.45);
+  background: rgba(40, 50, 60, 0.75);
+  color: var(--text);
+}
+
 .history-pick {
   display: flex;
   flex-direction: column;

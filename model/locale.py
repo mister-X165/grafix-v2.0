@@ -13,6 +13,7 @@ SUPPORTED_LANGUAGES: dict[str, dict[str, str]] = {
     "de": {"flag": "🇩🇪", "name": "Deutsch", "native": "Deutsch"},
     "sr": {"flag": "🇷🇸", "name": "Српски", "native": "Српски"},
     "kk": {"flag": "🇰🇿", "name": "Қазақша", "native": "Қазақша"},
+    "tt": {"flag": "🏴", "name": "Татарча", "native": "Татарча"},
     "vi": {"flag": "🇻🇳", "name": "Tiếng Việt", "native": "Tiếng Việt"},
 }
 
@@ -48,6 +49,10 @@ def normalize_language(value: Any) -> str:
         "kazakh": "kk",
         "қазақша": "kk",
         "қазақ": "kk",
+        "tat": "tt",
+        "tatar": "tt",
+        "татарча": "tt",
+        "татарский": "tt",
         "vie": "vi",
         "vietnamese": "vi",
         "tiếng việt": "vi",
@@ -115,6 +120,13 @@ def language_instruction(code: str | None) -> str:
             "Мән атауларын мәтіндегідей қалдыр. "
             "relation — қысқа snake_case (жұмыс_істейді, басқарады, байланысты), мүмкіндігінше қазақша. "
             "evidence, ескертпелер және пікірлер — қазақ тілінде (кирилл)."
+        )
+    if lang == "tt":
+        return (
+            f"ЧЫГЫШ ТЕЛЕ: {name}. "
+            "Субъект исемнәрен тексттәгечә калдыр. "
+            "relation — кыска snake_case (эшли, җитәкли, бәйләнгән), мөмкин булса татарча. "
+            "evidence, искәрмәләр һәм комментарийлар — татар телендә (кирилл)."
         )
     if lang == "vi":
         return (

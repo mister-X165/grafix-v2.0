@@ -44,6 +44,8 @@ let networkBound = false;
 let historyItems = [];
 let ctxEntityName = null;
 let entityName = null;
+/** Hide node/edge text labels (useful in fullscreen). */
+let hideGraphLabels = false;
 
 function engineLabel(engine) {
   const e = (engine || "").toLowerCase();
@@ -131,6 +133,7 @@ function setLanguage(code, { persist = true } = {}) {
   }
   applyI18n(lang);
   syncGenerateButtonLabel();
+  syncGraphLabelsBtn();
   if (el.analyze) {
     const label = el.analyze.querySelector(".btn-label");
     if (label && !el.analyze.classList.contains("is-loading")) {
@@ -300,6 +303,7 @@ const el = {
   saveGraph: document.getElementById("btn-save-graph"),
   graphFs: document.getElementById("btn-graph-fs"),
   graphFsExit: document.getElementById("btn-graph-fs-exit"),
+  graphLabelsBtn: document.getElementById("btn-graph-labels"),
   graphStage: document.getElementById("graph-stage"),
   historyTabs: document.getElementById("history-tabs"),
   historyCount: document.getElementById("history-count"),
@@ -876,13 +880,45 @@ function syncGraphFsUi() {
     el.graphFs.title = t("fullscreen_title");
   }
   if (el.graphFsExit) el.graphFsExit.hidden = !on;
-  if (el.graphStage) el.graphStage.classList.toggle("is-fullscreen", on);
+  if (el.graphLabelsBtn) el.graphLabelsBtn.hidden = !on;
+  if (el.graphStage) {
+    el.graphStage.classList.toggle("is-fullscreen", on);
+    el.graphStage.classList.toggle("labels-hidden", on && hideGraphLabels);
+  }
+  syncGraphLabelsBtn();
   if (on && el.historyPanel && !el.historyPanel.open) {
     el.historyPanel.open = true;
   }
   syncFsEditDock(on);
   syncFsOverlays(on);
   resizeGraphNetwork();
+  if (graphNodes.length) drawGraph(graphNodes, graphEdges);
+}
+
+function labelsCurrentlyHidden() {
+  return hideGraphLabels && isGraphFullscreen();
+}
+
+function syncGraphLabelsBtn() {
+  const btn = el.graphLabelsBtn;
+  if (!btn) return;
+  const hidden = hideGraphLabels;
+  btn.setAttribute("aria-pressed", hidden ? "true" : "false");
+  btn.classList.toggle("is-active", hidden);
+  btn.textContent = hidden ? t("show_labels") : t("hide_labels");
+  btn.title = hidden ? t("show_labels_title") : t("hide_labels_title");
+}
+
+function toggleGraphLabels() {
+  hideGraphLabels = !hideGraphLabels;
+  if (el.graphStage) {
+    el.graphStage.classList.toggle(
+      "labels-hidden",
+      hideGraphLabels && isGraphFullscreen()
+    );
+  }
+  syncGraphLabelsBtn();
+  drawGraph(graphNodes, graphEdges);
 }
 
 /** Move edit form into fullscreen stage so правки доступны на весь экран. */
@@ -1177,9 +1213,10 @@ function drawGraph(nodes, edges) {
     graphNodes.map((n) => {
       const nodeMuted = transparentNodes.has(n.id);
       const hi = highlightNodes.has(n.id);
+      const noLabel = labelsCurrentlyHidden();
       return {
         id: n.id,
-        label: n.label || n.id,
+        label: noLabel ? " " : n.label || n.id,
         opacity: nodeMuted ? 0.2 : 1,
         color: {
           background: nodeMuted
@@ -1197,7 +1234,7 @@ function drawGraph(nodes, edges) {
         font: {
           color: nodeMuted ? "rgba(244, 246, 247, 0.25)" : "#f4f6f7",
           face: "Resist Sans Text",
-          size: 14,
+          size: noLabel ? 0 : 14,
         },
       };
     })
@@ -1222,11 +1259,12 @@ function drawGraph(nodes, edges) {
       let label = e.label || e.relation || "";
       if (isHidden && label && !/скрыт/i.test(label)) label = `${label} · скрытая`;
       if (isFalse && label && !/ложн/i.test(label)) label = `${label} · ложная`;
+      const noLabel = labelsCurrentlyHidden();
       return {
         id: e.id,
         from: e.source,
         to: e.target,
-        label,
+        label: noLabel ? undefined : label,
         title: [
           e.evidence ? `evidence: ${e.evidence}` : "",
           e.confidence != null && e.confidence !== ""
@@ -1257,7 +1295,7 @@ function drawGraph(nodes, edges) {
             : showRed
               ? "#c97878"
               : fontColor,
-          size: 11,
+          size: noLabel ? 0 : 11,
           face: "Resist Sans Text",
           strokeWidth: 0,
         },
@@ -1576,6 +1614,7 @@ if (el.historySelect) {
 }
 if (el.graphFs) el.graphFs.addEventListener("click", toggleGraphFullscreen);
 if (el.graphFsExit) el.graphFsExit.addEventListener("click", toggleGraphFullscreen);
+if (el.graphLabelsBtn) el.graphLabelsBtn.addEventListener("click", toggleGraphLabels);
 document.addEventListener("fullscreenchange", () => {
   syncGraphFsUi();
 });
