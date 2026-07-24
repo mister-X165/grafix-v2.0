@@ -69,6 +69,10 @@
                 <img class="lang-flag" src="/brand/flags/de.svg" alt="" width="22" height="15" />
                 <span class="lang-name">Deutsch</span>
               </li>
+              <li role="option" data-lang="nl">
+                <img class="lang-flag" src="/brand/flags/nl.svg" alt="" width="22" height="15" />
+                <span class="lang-name">Nederlands</span>
+              </li>
               <li role="option" data-lang="sr">
                 <img class="lang-flag" src="/brand/flags/sr.svg" alt="" width="22" height="15" />
                 <span class="lang-name">Српски</span>
@@ -84,6 +88,10 @@
               <li role="option" data-lang="vi">
                 <img class="lang-flag" src="/brand/flags/vi.svg" alt="" width="22" height="15" />
                 <span class="lang-name">Tiếng Việt</span>
+              </li>
+              <li role="option" data-lang="tr">
+                <img class="lang-flag" src="/brand/flags/tr.svg" alt="" width="22" height="15" />
+                <span class="lang-name">Türkçe</span>
               </li>
             </ul>
             <input type="hidden" id="language-select" value="ru" />
@@ -111,11 +119,32 @@
               </optgroup>
             </select>
           </label>
-          <label class="opt-chip" for="reasoning-toggle" data-i18n-title="reasoning_title" title="Thinking / reasoning: DeepSeek и GigaChat. Выключен — быстрее">
-            <input id="reasoning-toggle" type="checkbox" />
-            <span class="opt-box" aria-hidden="true"></span>
-            <span class="opt-label" data-i18n="reasoning">Reasoning</span>
-          </label>
+          <div class="analyze-opts">
+            <label class="opt-chip" for="reasoning-toggle" data-i18n-title="reasoning_title" title="Thinking / reasoning: DeepSeek и GigaChat. Выключен — быстрее">
+              <input id="reasoning-toggle" type="checkbox" />
+              <span class="opt-box" aria-hidden="true"></span>
+              <span class="opt-label" data-i18n="reasoning">Reasoning</span>
+            </label>
+            <label
+              class="opt-chip is-disabled"
+              for="term-toggle"
+              data-i18n-title="term_research_title"
+              title="Исследовать термин / событие через веб-поиск (только сетевые модели)"
+            >
+              <input id="term-toggle" type="checkbox" disabled />
+              <span class="opt-box" aria-hidden="true"></span>
+              <span class="opt-label" data-i18n="term_research">Термин</span>
+            </label>
+            <input
+              id="term-input"
+              class="term-input"
+              type="text"
+              disabled
+              autocomplete="off"
+              data-i18n-placeholder="term_placeholder"
+              placeholder="Термин, слово или событие…"
+            />
+          </div>
           <div
             id="drop-zone"
             class="drop-zone"
@@ -371,7 +400,31 @@
                 <span id="map-meta" class="meta"></span>
               </div>
               <div id="leaflet-map" class="leaflet-map"></div>
-              <ul id="marker-list" class="marker-list"></ul>
+              <div class="marker-panel" id="marker-panel">
+                <div
+                  class="marker-panel-resize"
+                  id="marker-panel-resize"
+                  role="separator"
+                  aria-orientation="horizontal"
+                  data-i18n-title="marker_panel_resize_title"
+                  title="Потяните, чтобы изменить высоту списка"
+                ></div>
+                <div class="marker-panel-bar">
+                  <button
+                    type="button"
+                    id="btn-marker-panel-toggle"
+                    class="btn marker-panel-toggle"
+                    aria-expanded="true"
+                    data-i18n="marker_panel_hide"
+                    data-i18n-title="marker_panel_hide_title"
+                    title="Скрыть список меток"
+                  >
+                    Скрыть список
+                  </button>
+                  <span class="meta marker-panel-hint" data-i18n="marker_panel_hint">Список меток</span>
+                </div>
+                <ul id="marker-list" class="marker-list"></ul>
+              </div>
             </div>
 
             <div id="view-globe" class="geo-view" hidden>

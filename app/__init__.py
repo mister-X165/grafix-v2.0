@@ -77,7 +77,20 @@ class AnalyzeBody(BaseModel):
     geo_graph: bool = True  # места/события → карта и глобус (DeepSeek)
     geo_engine: str = "deepseek-v4"  # deepseek | deepseek-v4
     reasoning: bool = False  # DeepSeek / GigaChat thinking mode
-    language: str = "ru"  # ru | en | es | pt | fr | de | sr | kk | tt | vi
+    language: str = "ru"  # ru | en | es | pt | fr | de | nl | sr | kk | tt | vi | tr
+
+
+class TermAnalyzeBody(BaseModel):
+    """Research one term/event via web search + network LLM, then extract a graph."""
+
+    term: str
+    document_id: str | None = None
+    engine: str = "deepseek-v4"  # deepseek | deepseek-v4 | gigachat
+    geo_graph: bool = True
+    geo_engine: str = "deepseek-v4"
+    reasoning: bool = False
+    language: str = "ru"
+    max_results: int = Field(default=8, ge=3, le=12)
 
 
 class AppendAnalyzeBody(BaseModel):
@@ -636,6 +649,139 @@ def analyze(body: AnalyzeBody) -> dict[str, Any]:
         "history_id": saved["id"],
         "history": saved,
     }
+
+
+def _network_research_client(engine: str):
+    eng = (engine or "").strip().lower()
+    if eng in {"deepseek", "deepseek-v4"}:
+        from model.openrouter import openrouter_for_engine
+
+        client = openrouter_for_engine(eng)
+        if not client.ready:
+            raise HTTPException(
+                status_code=503,
+                detail="Нет OPENROUTER_API_KEY — задай ключ OpenRouter для DeepSeek",
+            )
+        label = "DeepSeek V4 Pro" if eng == "deepseek-v4" else "DeepSeek 3.2"
+        return client, eng, label
+    if eng == "gigachat":
+        from model.gigachat import GigaChatExtractor
+
+        client = GigaChatExtractor()
+        if not client.ready:
+            raise HTTPException(
+                status_code=503,
+                detail="Нет GIGACHAT_CREDENTIALS — задай Auth key GigaChat в .env",
+            )
+        return client, eng, "GigaChat"
+    raise HTTPException(
+        status_code=400,
+        detail="Исследование термина доступно только для сетевых моделей: DeepSeek или GigaChat",
+    )
+
+
+def _research_term_dossier(
+    client: Any,
+    term: str,
+    web_results: list[dict[str, Any]],
+    *,
+    reasoning: bool,
+    language: str,
+) -> dict[str, Any]:
+    from graph.websearch import format_results_for_prompt
+    from model.locale import language_instruction
+    from model.lmstudio import TERM_RESEARCH_SYSTEM
+
+    lang_block = language_instruction(language)
+    system = TERM_RESEARCH_SYSTEM + "\n\n" + lang_block
+    user = (
+        f"Термин / слово / событие для исследования:\n{term}\n\n"
+        f"Результаты веб-поиска:\n{format_results_for_prompt(web_results)}\n\n"
+        "Напиши связный справочный текст для извлечения графа знаний."
+    )
+    chat = client.chat(
+        [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        temperature=0.15,
+        max_tokens=3500,
+        reasoning=reasoning,
+    )
+    raw = (chat.get("raw") or "").strip()
+    return {
+        "text": raw,
+        "ok": bool(chat.get("ok") and raw),
+        "error": chat.get("error"),
+        "model": chat.get("model"),
+        "raw_response": chat.get("raw") or "",
+        "prompt_user": user,
+        "reasoning": chat.get("reasoning") or "",
+    }
+
+
+@app.post("/api/analyze/term")
+def analyze_term(body: TermAnalyzeBody) -> dict[str, Any]:
+    """Web-search a term/event, write a dossier with a network LLM, extract a graph."""
+    from graph.websearch import format_results_for_prompt, search_web
+
+    term = (body.term or "").strip()
+    if not term:
+        raise HTTPException(status_code=400, detail="Укажите термин, слово или событие")
+
+    client, engine, label = _network_research_client(body.engine or "deepseek-v4")
+    web_payload = search_web(term, max_results=int(body.max_results or 8))
+    web_results = list(web_payload.get("results") or [])
+    if not web_results:
+        detail = web_payload.get("error") or "Поиск ничего не нашёл"
+        raise HTTPException(
+            status_code=502,
+            detail=f"Не удалось найти информацию о «{term}»: {detail}",
+        )
+
+    dossier = _research_term_dossier(
+        client,
+        term,
+        web_results,
+        reasoning=bool(body.reasoning),
+        language=body.language or "ru",
+    )
+    text = (dossier.get("text") or "").strip()
+    if not text:
+        # Fallback: use search snippets as the document for extract
+        text = (
+            f"Справка по запросу «{term}» (по результатам поиска):\n\n"
+            + format_results_for_prompt(web_results)
+        )
+
+    out = analyze(
+        AnalyzeBody(
+            text=text,
+            document_id=body.document_id,
+            engine=engine,
+            geo_graph=bool(body.geo_graph),
+            geo_engine=body.geo_engine or "deepseek-v4",
+            reasoning=bool(body.reasoning),
+            language=body.language or "ru",
+        )
+    )
+    debug = dict(out.get("debug") or {})
+    debug["term"] = term
+    debug["research_raw"] = dossier.get("raw_response") or ""
+    debug["research_error"] = dossier.get("error")
+    debug["research_prompt"] = dossier.get("prompt_user") or ""
+    debug["research_reasoning"] = dossier.get("reasoning") or ""
+    debug["web_query"] = web_payload.get("query") or term
+    debug["web_error"] = web_payload.get("error")
+    out["debug"] = debug
+    out["mode"] = "term"
+    out["term"] = term
+    out["web_sources"] = web_results
+    out["research_model"] = dossier.get("model") or label
+    hint = out.get("hint") or ""
+    extra = f"термин «{term}»: поиск {len(web_results)} ист., досье → граф ({label})"
+    out["hint"] = f"{hint} · {extra}" if hint else extra
+    return out
 
 
 @app.post("/api/analyze/append")

@@ -503,6 +503,29 @@ input:-webkit-autofill:focus {
   border-color: rgba(218, 222, 225, 0.55);
 }
 
+.drop-zone.is-locked {
+  opacity: 0.42;
+  pointer-events: none;
+  cursor: not-allowed;
+  filter: grayscale(0.25);
+}
+
+.drop-zone.is-locked textarea {
+  cursor: not-allowed;
+  resize: none;
+}
+
+.text-actions.is-locked {
+  opacity: 0.42;
+  pointer-events: none;
+}
+
+.file-btn.is-disabled {
+  opacity: 0.55;
+  pointer-events: none;
+  cursor: not-allowed;
+}
+
 .text-actions {
   display: flex;
   align-items: center;
@@ -1124,15 +1147,85 @@ textarea {
   color: #ff8aad;
 }
 
-.marker-list {
-  list-style: none;
-  margin: 0.55rem 0 0;
-  padding: 0;
-  max-height: 140px;
-  overflow: auto;
+#view-map.is-active .leaflet-map {
+  flex: 1 1 auto;
+  min-height: 220px;
+}
+
+.marker-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  margin-top: 0.35rem;
   border: 1px solid var(--line);
   border-radius: 2px;
   background: rgba(7, 9, 11, 0.7);
+  min-height: 0;
+}
+
+.marker-panel-resize {
+  flex: 0 0 7px;
+  cursor: ns-resize;
+  background: linear-gradient(
+    180deg,
+    rgba(218, 222, 225, 0.08),
+    rgba(218, 222, 225, 0.22),
+    rgba(218, 222, 225, 0.08)
+  );
+  border-bottom: 1px solid rgba(106, 127, 140, 0.35);
+  touch-action: none;
+}
+
+.marker-panel-resize:hover,
+.marker-panel-resize.is-dragging {
+  background: rgba(46, 196, 182, 0.35);
+}
+
+.marker-panel-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.3rem 0.45rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.marker-panel-toggle {
+  padding: 0.28rem 0.55rem;
+  font-size: 0.78rem;
+}
+
+.marker-panel-hint {
+  font-size: 0.72rem;
+}
+
+.marker-panel.is-collapsed .marker-panel-resize {
+  display: none;
+}
+
+.marker-panel.is-collapsed .marker-list {
+  display: none;
+}
+
+.marker-panel.is-collapsed .marker-panel-bar {
+  border-bottom: 0;
+}
+
+.marker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  height: var(--marker-list-h, 140px);
+  max-height: none;
+  overflow: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* Hide relation text chips on map/globe when labels are off */
+.graph-stage.labels-hidden .map-link-label,
+.graph-stage.labels-hidden .globe-html-label {
+  display: none !important;
 }
 
 .marker-list li {
@@ -1244,6 +1337,16 @@ textarea {
 .graph-stage:-webkit-full-screen .geo-view.is-active {
   flex: 1;
   min-height: 0;
+}
+
+.graph-stage:fullscreen #view-map.is-active .leaflet-map,
+.graph-stage:-webkit-full-screen #view-map.is-active .leaflet-map {
+  min-height: 0;
+}
+
+.graph-stage:fullscreen .marker-panel,
+.graph-stage:-webkit-full-screen .marker-panel {
+  max-height: 45vh;
 }
 
 .fs-edit-dock {
@@ -1768,6 +1871,58 @@ textarea {
 
 .panel-input > .opt-chip {
   margin: 0.4rem 0 0.55rem;
+}
+
+.analyze-opts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0.4rem 0 0.55rem;
+}
+
+.analyze-opts > .opt-chip {
+  margin: 0;
+}
+
+.opt-chip.is-disabled {
+  opacity: 0.45;
+  pointer-events: none;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.term-input {
+  flex: 1 1 12rem;
+  min-width: 9rem;
+  max-width: 22rem;
+  margin: 0;
+  padding: 0.42rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: rgba(7, 9, 11, 0.55);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9rem;
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease,
+    opacity 0.2s ease;
+}
+
+.term-input:hover:not(:disabled) {
+  border-color: rgba(218, 222, 225, 0.35);
+  background: rgba(28, 36, 44, 0.72);
+}
+
+.term-input:focus {
+  outline: 1px solid var(--slate);
+  outline-offset: 2px;
+}
+
+.term-input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .entity-web-toggle {

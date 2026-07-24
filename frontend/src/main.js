@@ -134,10 +134,12 @@ function setLanguage(code, { persist = true } = {}) {
   applyI18n(lang);
   syncGenerateButtonLabel();
   syncGraphLabelsBtn();
-  if (el.analyze) {
+  syncMarkerPanelBtn();
+  syncTermResearchUi();
+  if (el.analyze && !el.analyze.classList.contains("is-loading")) {
     const label = el.analyze.querySelector(".btn-label");
-    if (label && !el.analyze.classList.contains("is-loading")) {
-      label.textContent = t("analyze");
+    if (label) {
+      label.textContent = selectedTermMode() ? t("research") : t("analyze");
     }
   }
   if (el.graphFs && !document.fullscreenElement) {
@@ -277,6 +279,8 @@ const el = {
   qaEngine: document.getElementById("qa-engine-select"),
   entityQaEngine: document.getElementById("entity-qa-engine-select"),
   reasoningToggle: document.getElementById("reasoning-toggle"),
+  termToggle: document.getElementById("term-toggle"),
+  termInput: document.getElementById("term-input"),
   question: document.getElementById("question-input"),
   ask: document.getElementById("btn-ask"),
   answer: document.getElementById("answer"),
@@ -305,6 +309,10 @@ const el = {
   graphFsExit: document.getElementById("btn-graph-fs-exit"),
   graphLabelsBtn: document.getElementById("btn-graph-labels"),
   graphStage: document.getElementById("graph-stage"),
+  markerPanel: document.getElementById("marker-panel"),
+  markerPanelResize: document.getElementById("marker-panel-resize"),
+  markerPanelToggle: document.getElementById("btn-marker-panel-toggle"),
+  markerList: document.getElementById("marker-list"),
   historyTabs: document.getElementById("history-tabs"),
   historyCount: document.getElementById("history-count"),
   historyEmpty: document.getElementById("history-empty"),
@@ -919,6 +927,72 @@ function toggleGraphLabels() {
   }
   syncGraphLabelsBtn();
   drawGraph(graphNodes, graphEdges);
+  // Map/globe relation chips are toggled via CSS (.labels-hidden)
+  try {
+    resizeMap();
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+function syncMarkerPanelBtn() {
+  const btn = el.markerPanelToggle;
+  const panel = el.markerPanel;
+  if (!btn || !panel) return;
+  const collapsed = panel.classList.contains("is-collapsed");
+  btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  btn.textContent = collapsed ? t("marker_panel_show") : t("marker_panel_hide");
+  btn.title = collapsed ? t("marker_panel_show_title") : t("marker_panel_hide_title");
+}
+
+function toggleMarkerPanel() {
+  const panel = el.markerPanel;
+  if (!panel) return;
+  panel.classList.toggle("is-collapsed");
+  syncMarkerPanelBtn();
+  try {
+    resizeMap();
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+function initMarkerPanelResize() {
+  const handle = el.markerPanelResize;
+  const list = el.markerList;
+  if (!handle || !list) return;
+
+  let startY = 0;
+  let startH = 0;
+
+  const onMove = (e) => {
+    const dy = e.clientY - startY;
+    // Dragging the top edge down → shorter list; up → taller
+    const next = Math.max(56, Math.min(window.innerHeight * 0.55, startH - dy));
+    list.style.setProperty("--marker-list-h", `${Math.round(next)}px`);
+    try {
+      resizeMap();
+    } catch (_) {
+      /* ignore */
+    }
+  };
+
+  const onUp = () => {
+    handle.classList.remove("is-dragging");
+    document.removeEventListener("pointermove", onMove);
+    document.removeEventListener("pointerup", onUp);
+  };
+
+  handle.addEventListener("pointerdown", (e) => {
+    if (el.markerPanel && el.markerPanel.classList.contains("is-collapsed")) return;
+    e.preventDefault();
+    startY = e.clientY;
+    startH = list.getBoundingClientRect().height || 140;
+    handle.classList.add("is-dragging");
+    handle.setPointerCapture?.(e.pointerId);
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+  });
 }
 
 /** Move edit form into fullscreen stage so правки доступны на весь экран. */
@@ -1056,6 +1130,57 @@ function selectedGeoEngine() {
 
 function selectedReasoning() {
   return !!(el.reasoningToggle && el.reasoningToggle.checked);
+}
+
+function selectedTermMode() {
+  return !!(el.termToggle && el.termToggle.checked);
+}
+
+function selectedAnalyzeEngine() {
+  return ((el.engine && el.engine.value) || "gemma").toLowerCase();
+}
+
+function syncTermResearchUi() {
+  const net = isNetworkTextEngine(selectedAnalyzeEngine());
+  if (el.termToggle) {
+    el.termToggle.disabled = !net;
+    if (!net) el.termToggle.checked = false;
+    const chip = el.termToggle.closest(".opt-chip");
+    if (chip) chip.classList.toggle("is-disabled", !net);
+  }
+  const on = selectedTermMode() && net;
+  if (el.termInput) el.termInput.disabled = !on;
+
+  // Term mode locks document textarea + file upload
+  if (el.text) {
+    el.text.disabled = on;
+    el.text.readOnly = on;
+  }
+  if (el.dropZone) {
+    el.dropZone.classList.toggle("is-locked", on);
+    el.dropZone.setAttribute("aria-disabled", on ? "true" : "false");
+    if (on) {
+      el.dropZone.removeAttribute("tabindex");
+      el.dropZone.classList.remove("is-dragover");
+    } else {
+      el.dropZone.setAttribute("tabindex", "0");
+    }
+  }
+  if (el.fileInput) el.fileInput.disabled = on;
+  const fileBtn = el.fileInput && el.fileInput.closest(".file-btn");
+  if (fileBtn) fileBtn.classList.toggle("is-disabled", on);
+  if (el.fileAppend) {
+    el.fileAppend.disabled = on;
+    const appendChip = el.fileAppend.closest(".opt-chip");
+    if (appendChip) appendChip.classList.toggle("is-disabled", on);
+  }
+  const textActions = document.querySelector(".panel-input > .text-actions");
+  if (textActions) textActions.classList.toggle("is-locked", on);
+
+  if (el.analyze && !el.analyze.classList.contains("is-loading")) {
+    const label = el.analyze.querySelector(".btn-label");
+    if (label) label.textContent = on ? t("research") : t("analyze");
+  }
 }
 
 function syncLinkToggles(checked) {
@@ -1380,7 +1505,24 @@ function drawGraph(nodes, edges) {
 }
 
 el.analyze.addEventListener("click", async () => {
-  el.meta.textContent = "Анализ…";
+  const termMode =
+    selectedTermMode() && isNetworkTextEngine(selectedAnalyzeEngine());
+  if (termMode) {
+    const term = ((el.termInput && el.termInput.value) || "").trim();
+    if (!term) {
+      el.meta.textContent = t("term_need_term");
+      return;
+    }
+  } else if (
+    selectedTermMode() &&
+    !isNetworkTextEngine(selectedAnalyzeEngine())
+  ) {
+    el.meta.textContent = t("term_need_network");
+    syncTermResearchUi();
+    return;
+  }
+
+  el.meta.textContent = termMode ? t("researching") : t("analysis");
   disabled = new Set();
   mutedNodes = new Set();
   mutedEdgeIds = new Set();
@@ -1389,26 +1531,44 @@ el.analyze.addEventListener("click", async () => {
   el.analyze.disabled = true;
   el.analyze.classList.add("is-loading");
   const label = el.analyze.querySelector(".btn-label");
-  if (label) label.textContent = t("analyzing");
+  if (label) label.textContent = termMode ? t("researching") : t("analyzing");
   try {
-    documentText = el.text.value;
-    const data = await post("/api/analyze", {
-      text: el.text.value,
-      document_id: documentId,
-      engine: el.engine ? el.engine.value : "gemma",
-      geo_graph: el.mapGeoAuto ? el.mapGeoAuto.checked : true,
-      geo_engine: selectedGeoEngine(),
-      reasoning: selectedReasoning(),
-      language: selectedLanguage(),
-    });
+    let data;
+    if (termMode) {
+      const term = ((el.termInput && el.termInput.value) || "").trim();
+      data = await post("/api/analyze/term", {
+        term,
+        document_id: documentId,
+        engine: selectedAnalyzeEngine(),
+        geo_graph: el.mapGeoAuto ? el.mapGeoAuto.checked : true,
+        geo_engine: selectedGeoEngine(),
+        reasoning: selectedReasoning(),
+        language: selectedLanguage(),
+      });
+    } else {
+      documentText = el.text.value;
+      data = await post("/api/analyze", {
+        text: el.text.value,
+        document_id: documentId,
+        engine: el.engine ? el.engine.value : "gemma",
+        geo_graph: el.mapGeoAuto ? el.mapGeoAuto.checked : true,
+        geo_engine: selectedGeoEngine(),
+        reasoning: selectedReasoning(),
+        language: selectedLanguage(),
+      });
+    }
     const eng = engineLabel(data.engine);
     el.meta.textContent =
+      (data.mode === "term" && data.term ? `термин: ${data.term} · ` : "") +
       `модель: ${eng}` +
       (selectedReasoning() && (isDeepseekEngine(data.engine) || data.engine === "gigachat")
         ? " · reasoning"
         : "") +
       ` · ${t("site_language").toLowerCase()}: ${LANGS[selectedLanguage()]?.name || selectedLanguage()}` +
       ` · источник: ${data.source} · троек: ${data.triples.length}` +
+      (data.web_sources && data.web_sources.length
+        ? ` · поиск: ${data.web_sources.length}`
+        : "") +
       (data.comments && Object.keys(data.comments).length
         ? ` · комментариев: ${Object.keys(data.comments).length}`
         : "") +
@@ -1443,9 +1603,16 @@ el.analyze.addEventListener("click", async () => {
   } finally {
     el.analyze.disabled = false;
     el.analyze.classList.remove("is-loading");
-    if (label) label.textContent = t("analyze");
+    syncTermResearchUi();
   }
 });
+
+if (el.engine) {
+  el.engine.addEventListener("change", () => syncTermResearchUi());
+}
+if (el.termToggle) {
+  el.termToggle.addEventListener("change", () => syncTermResearchUi());
+}
 
 async function runAppendOrBridge(mode) {
   const text = (el.appendText && el.appendText.value) || "";
@@ -1615,6 +1782,11 @@ if (el.historySelect) {
 if (el.graphFs) el.graphFs.addEventListener("click", toggleGraphFullscreen);
 if (el.graphFsExit) el.graphFsExit.addEventListener("click", toggleGraphFullscreen);
 if (el.graphLabelsBtn) el.graphLabelsBtn.addEventListener("click", toggleGraphLabels);
+if (el.markerPanelToggle) {
+  el.markerPanelToggle.addEventListener("click", toggleMarkerPanel);
+}
+initMarkerPanelResize();
+syncMarkerPanelBtn();
 document.addEventListener("fullscreenchange", () => {
   syncGraphFsUi();
 });
@@ -1734,6 +1906,10 @@ document.addEventListener("keydown", (e) => {
 
 async function uploadDocumentFile(file) {
   if (!file) return;
+  if (selectedTermMode() && isNetworkTextEngine(selectedAnalyzeEngine())) {
+    if (el.fileMeta) el.fileMeta.textContent = t("term_text_locked");
+    return;
+  }
   if (el.fileMeta) el.fileMeta.textContent = `Читаю ${file.name}…`;
   try {
     const form = new FormData();
@@ -1780,10 +1956,13 @@ if (el.fileInput) {
 
 if (el.dropZone) {
   const setDrag = (on) => el.dropZone.classList.toggle("is-dragover", on);
+  const termLocked = () =>
+    selectedTermMode() && isNetworkTextEngine(selectedAnalyzeEngine());
   ["dragenter", "dragover"].forEach((ev) => {
     el.dropZone.addEventListener(ev, (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (termLocked()) return;
       setDrag(true);
     });
   });
@@ -1796,6 +1975,7 @@ if (el.dropZone) {
   });
   el.dropZone.addEventListener("drop", (e) => {
     setDrag(false);
+    if (termLocked()) return;
     const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
     if (file) uploadDocumentFile(file);
   });
@@ -1807,4 +1987,5 @@ el.text.value =
   "Освальд Бэр — бенефициар Фонда «Тихая гавань».";
 
 initLanguagePicker();
+syncTermResearchUi();
 refreshHistoryList();

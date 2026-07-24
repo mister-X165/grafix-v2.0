@@ -11,10 +11,12 @@ SUPPORTED_LANGUAGES: dict[str, dict[str, str]] = {
     "pt": {"flag": "🇵🇹", "name": "Português", "native": "Português"},
     "fr": {"flag": "🇫🇷", "name": "Français", "native": "Français"},
     "de": {"flag": "🇩🇪", "name": "Deutsch", "native": "Deutsch"},
+    "nl": {"flag": "🇳🇱", "name": "Nederlands", "native": "Nederlands"},
     "sr": {"flag": "🇷🇸", "name": "Српски", "native": "Српски"},
     "kk": {"flag": "🇰🇿", "name": "Қазақша", "native": "Қазақша"},
     "tt": {"flag": "🏴", "name": "Татарча", "native": "Татарча"},
     "vi": {"flag": "🇻🇳", "name": "Tiếng Việt", "native": "Tiếng Việt"},
+    "tr": {"flag": "🇹🇷", "name": "Türkçe", "native": "Türkçe"},
 }
 
 DEFAULT_LANGUAGE = "ru"
@@ -42,6 +44,10 @@ def normalize_language(value: Any) -> str:
         "ger": "de",
         "deu": "de",
         "german": "de",
+        "nld": "nl",
+        "dut": "nl",
+        "dutch": "nl",
+        "nederlands": "nl",
         "srb": "sr",
         "serbian": "sr",
         "српски": "sr",
@@ -57,6 +63,10 @@ def normalize_language(value: Any) -> str:
         "vietnamese": "vi",
         "tiếng việt": "vi",
         "tieng viet": "vi",
+        "tur": "tr",
+        "turkish": "tr",
+        "türkçe": "tr",
+        "turkce": "tr",
     }
     code = aliases.get(base, base)
     return code if code in SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE
@@ -100,6 +110,13 @@ def language_instruction(code: str | None) -> str:
             "relation — kurzes snake_case (arbeitet_bei, leitet, verbunden_mit), bevorzugt auf Deutsch. "
             "evidence, notes und Kommentare — auf Deutsch."
         )
+    if lang == "nl":
+        return (
+            f"UITVOERTAAL: {name}. "
+            "Houd entiteitsnamen zoals in de brontekst. "
+            "relation — kort snake_case (werkt_bij, leidt, gerelateerd_aan), bij voorkeur in het Nederlands. "
+            "evidence, notities en commentaren — in het Nederlands."
+        )
     if lang == "es":
         return (
             f"IDIOMA DE SALIDA: {name}. "
@@ -134,6 +151,13 @@ def language_instruction(code: str | None) -> str:
             "Giữ tên thực thể như trong văn bản nguồn. "
             "relation — snake_case ngắn (lam_viec_tai, lanh_dao, lien_quan_den), ưu tiên tiếng Việt không dấu hoặc có dấu thống nhất. "
             "evidence, ghi chú và bình luận — bằng tiếng Việt."
+        )
+    if lang == "tr":
+        return (
+            f"ÇIKTI DİLİ: {name}. "
+            "Varlık adlarını kaynak metindeki gibi bırak. "
+            "relation — kısa snake_case (calisir, yonetir, ilgili), tercihen Türkçe. "
+            "evidence, notlar ve yorumlar — Türkçe."
         )
     # sr
     return (
