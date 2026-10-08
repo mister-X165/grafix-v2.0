@@ -1,9 +1,14 @@
-fastapi>=0.115.0
-uvicorn[standard]>=0.32.0
-neo4j>=5.14.0
-python-multipart>=0.0.9
-python-docx>=1.1.0
-pypdf>=5.0.0
-striprtf>=0.0.26
-duckduckgo-search>=6.0.0
-ddgs>=9.0.0
+# Обязательные зависимости (проверяются при запуске, app/dependencies.py, ТЗ §51)
+httpx>=0.27            # асинхронный HTTP: загрузка страниц и API источников (§61)
+pydantic>=2.7          # схемы Claim/Source/Evidence/Verdict/Report + валидация LLM-JSON (§55-§60)
+PyYAML>=6.0            # единый configuration layer config/config.yaml (§6)
+beautifulsoup4>=4.12   # извлечение текста/metadata из HTML (§63)
+lxml>=5.0              # быстрый парсер для BeautifulSoup (§63)
+
+# GUI (ТЗ §10)
+PySide6>=6.6           # окно приложения: URL-инпут, режимы, прогресс, отчёт
+
+# Опциональные (при отсутствии — понятное сообщение и fallback, §51)
+trafilatura>=1.8       # качественное извлечение основного текста (fallback: bs4)
+PyMuPDF>=1.24          # чтение PDF-материалов (лимит max_pdf_pages из конфигурации)
+python-dotenv>=1.0     # загрузка .env с секретами (fallback: переменные окружения ОС)

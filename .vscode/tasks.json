@@ -1,0 +1,50 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Создать venv (.venv)",
+            "type": "shell",
+            "command": "py -3 -m venv .venv",
+            "options": { "cwd": "${workspaceFolder}" },
+            "problemMatcher": []
+        },
+        {
+            "label": "Установить зависимости (pip install -r requirements.txt)",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/Scripts/python.exe -m pip install --upgrade pip && ${workspaceFolder}/.venv/Scripts/python.exe -m pip install -r requirements.txt",
+            "options": { "cwd": "${workspaceFolder}" },
+            "problemMatcher": []
+        },
+        {
+            "label": "Запустить GUI",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/Scripts/python.exe run.py",
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": []
+        },
+        {
+            "label": "Запустить CLI-анализ",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/Scripts/python.exe run.py --cli ${input:url} --mode research",
+            "options": { "cwd": "${workspaceFolder}" },
+            "problemMatcher": []
+        },
+        {
+            "label": "Тесты: pytest",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/Scripts/python.exe -m pytest tests -q",
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": "test",
+            "problemMatcher": []
+        }
+    ],
+    "inputs": [
+        {
+            "id": "url",
+            "type": "promptString",
+            "description": "URL для проверки",
+            "default": "https://www.who.int/news-room/fact-sheets"
+        }
+    ]
+}

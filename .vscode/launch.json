@@ -1,0 +1,44 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Фактчекер: GUI",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/run.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "justMyCode": true
+        },
+        {
+            "name": "Фактчекер: CLI (попросить URL)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/run.py",
+            "args": ["--cli", "${input:url}", "--mode", "research"],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "justMyCode": true
+        },
+        {
+            "name": "Тесты: pytest",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["tests", "-q"],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "url",
+            "type": "promptString",
+            "description": "URL для проверки",
+            "default": "https://www.who.int/news-room/fact-sheets"
+        }
+    ]
+}

@@ -1,0 +1,78 @@
+# Конфигурация системы фактчекинга медицинской информации.
+# Единственный источник истины: модель, бэкенд, лимиты, доверенные домены.
+# Секреты (API-ключи) — только через .env / переменные окружения, не здесь.
+
+llm:
+  backend: llama.cpp            # llama.cpp | ollama | openai_compat
+  model_path: "models/qwen2.5-7b-instruct-q4_k_m.gguf"   # для llama.cpp
+  llama_server_url: "http://127.0.0.1:8080"              # если используется llama-server
+  ollama_url: "http://127.0.0.1:11434"
+  ollama_model: "qwen2.5:7b"
+  openai_compat_base_url: "http://127.0.0.1:1234/v1"     # LM Studio
+  openai_compat_model: ""                                # пусто = первая загруженная
+  temperature: 0.1
+  max_tokens: 2048
+  request_timeout_s: 300
+  max_retries: 2
+
+limits:
+  max_download_size_bytes: 10485760      # 10 MiB на документ
+  max_pages_per_analysis: 25             # сколько страниц источника грузить за анализ
+  max_redirects: 5
+  max_requests_per_analysis: 120
+  request_timeout_s: 30
+  total_analysis_timeout_s: 1800
+  max_pdf_pages: 40
+  max_context_chars: 24000               # обрезка текста для LLM
+  search_concurrency: 4
+  fetch_concurrency: 3
+
+research:
+  mode_default: research                 # controlled | research
+  min_sources_per_claim: 3
+  adversarial_search: true               # обязателен в RESEARCH MODE
+  web_search_enabled: true               # DuckDuckGo (без ключа)
+  pubmed_enabled: true
+  europepmc_enabled: true
+  crossref_enabled: true
+
+sources:
+  # CONTROLLED MODE: только эти категории доменов (+ их поддомены)
+  trusted_domains:
+    who: ["who.int"]
+    cdc: ["cdc.gov"]
+    fda: ["fda.gov"]
+    ema: ["ema.europa.eu"]
+    nice: ["nice.org.uk"]
+    pubmed: ["pubmed.ncbi.nlm.nih.gov", "ncbi.nlm.nih.gov"]
+    cochrane: ["cochrane.org", "www.cochranelibrary.com"]
+    europepmc: ["europepmc.org"]
+    crossref: ["crossref.org", "doi.org"]
+    nih: ["nih.gov", "nlm.nih.gov"]
+    nhs: ["nhs.uk"]
+    gov_ru: ["rospotrebnadzor.ru", "rosminzdrav.ru"]  # официальные государственные медицинские организации РФ
+    journals: ["nature.com", "sciencedirect.com", "thelancet.com", "nejm.org",
+               "bmj.com", "jamanetwork.com", "annals.org", "springer.com", "wiley.com",
+               "oxfordacademic.com", "tandfonline.com", "karger.com", "frontiersin.org", "mdpi.com"]
+  # Тир источников по умолчанию (пересекается с эвристикой классификации)
+  tier_domains:
+    4: ["who.int", "cdc.gov", "fda.gov", "ema.europa.eu", "nice.org.uk",
+        "nih.gov", "nhs.uk", "rospotrebnadzor.ru", "rosminzdrav.ru"]
+    1: ["cochrane.org", "www.cochranelibrary.com"]
+    6: ["nature.com", "thelancet.com", "nejm.org", "bmj.com", "jamanetwork.com",
+        "sciencedirect.com", "annals.org", "frontiersin.org", "mdpi.com", "europepmc.org",
+        "pubmed.ncbi.nlm.nih.gov"]
+  news_domains: ["bbc.com", "bbc.co.uk", "reuters.com", "apnews.com", "tass.ru", "ria.ru", "medportal.ru", "medvestnik.ru"]
+  low_quality_signals: ["advert", "buy", "discount", "order now", "affiliate", "sponsor",
+                        "купить", "заказать", "скидка", "акция", "партнёрск"]
+
+storage:
+  data_dir: "data"           # sqlite + cache + logs внутри
+  db_name: "factcheck.db"
+
+logging:
+  level: INFO                # DEBUG для разработчика
+  file: "data/logs/factcheck.log"
+
+ui:
+  debug_mode: false
