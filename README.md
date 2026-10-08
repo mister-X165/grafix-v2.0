@@ -79,7 +79,22 @@ ollama pull qwen2.5:7b
 Единый configuration layer: `config/config.yaml` (+ секреты через `.env`, см.
 `.env.example`). Модель, бэкенды, лимиты (размер загрузки, редиректы, таймауты,
 число страниц/запросов), доверенные домены CONTROLLED MODE, тиры источников —
-только там. Смена backend:
+только там.
+
+**Файл конфигурации не является обязательным для запуска.** Формат конфигурации —
+YAML (`config/config.yaml`), а не `config.json` — файл `config.json` проекту не
+нужен. Если `config/config.yaml` отсутствует, приложение автоматически
+использует встроенные безопасные значения по умолчанию (backend `llama.cpp` на
+`http://127.0.0.1:8080`, стандартные лимиты ресурсов и т. д.) и корректно
+запускается. Чтобы изменить путь к модели, backend или лимиты — создайте файл
+`config/config.yaml` (образец уже лежит в репозитории) или укажите свой путь
+через переменную окружения `FACTCHECK_CONFIG=/path/to/my.yaml`.
+
+Файл `.env` также опционален: он нужен только для ключей внешних научных API
+(`NCBI_API_KEY`, `CROSSREF_MAILTO`). Без него всё работает по публичным
+эндпоинтам с пониженными rate limit.
+
+Смена backend:
 
 ```yaml
 llm:
@@ -97,6 +112,37 @@ python run.py            :: графический интерфейс
 run.bat                  :: то же самое на Windows
 python run.py --cli "https://example.org/article" --mode research [--json out.json]
 ```
+
+### Запуск через Visual Studio Code (рекомендуется)
+
+В репозиторий включена готовая конфигурация `.vscode/` (settings, launch, tasks).
+
+1. Откройте папку проекта в VS Code: `File → Open Folder` (в пути желательно без
+   кириллицы и пробелов).
+2. Создайте виртуальное окружение и установите зависимости — через палитру задач:
+   `Terminal → Run Task…` → **«Создать venv (.venv)»**, затем
+   **«Установить зависимости (pip install -r requirements.txt)»**.
+   Либо вручную в терминале PowerShell:
+   ```powershell
+   py -3 -m venv .venv
+   .venv\Scripts\Activate.ps1
+   python -m pip install -r requirements.txt
+   ```
+   Если активация блокируется политикой выполнения:
+   `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`
+3. Выберите интерпретатор: `Ctrl+Shift+P` → **Python: Select Interpreter** →
+   `.venv\Scripts\python.exe` (VS Code подхватит его автоматически благодаря
+   `python.defaultInterpreterPath` в `.vscode/settings.json`).
+4. Запуск:
+   - **F5** → конфигурация **«Фактчекер: GUI»** (или **«Фактчекер: CLI»**, где URL
+     запрашивается при запуске);
+   - либо `Ctrl+Shift+B` — задача **«Запустить GUI»**;
+   - тесты: вкладка Testing или задача **«Тесты: pytest»**.
+
+> Ошибка `GUI недоступен (No module named 'PySide6')` означает, что VS Code
+> использует системный Python вместо `.venv`, либо зависимости не установлены.
+> Проверьте имя интерпретатора в правом нижнем углу окна VS Code (должно быть
+> `.venv`) и повторите шаг 2.
 
 GUI: поле URL → режим (Контролируемый / Исследовательский) → кнопка «ПРОВЕРИТЬ» →
 прогресс по этапам → итоговый экран (общий вердикт, сводка, список claims с

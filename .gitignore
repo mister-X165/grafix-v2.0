@@ -1,11 +1,11 @@
-# Environment files
-.env
-.env.local
-
-# Python compiled and cache
+# Python compiled files
 __pycache__/
 *.pyc
-*.pyo
-*.egg-info/
-.pytest_cache/
-.mypy_cache/
+
+# Virtual environment
+.venv/
+
+# Environment and secrets
+.env
+.env.local
+.env.*
