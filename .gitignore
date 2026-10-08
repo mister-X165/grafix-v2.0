@@ -1,14 +1,11 @@
-.venv/
+# Environment files
+.env
+.env.local
+
+# Python compiled and cache
 __pycache__/
 *.pyc
-.pytest_cache/
+*.pyo
 *.egg-info/
-.env
-.idea/
-frontend/node_modules/
-frontend/dist/
-data/grafix_history.db
-data/*.db
-data/*.db-*
-model/checkpoints/*.json
-!model/checkpoints/.gitkeep
+.pytest_cache/
+.mypy_cache/

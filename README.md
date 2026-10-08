@@ -1,120 +1,186 @@
-# Grafix
+# Локальная система интеллектуального фактчекинга медицинской информации
 
-Анализ текста → сущности и связи (**Gemma / LM Studio**, **DeepSeek 3.2 / OpenRouter**, MicroGPT) → граф Neo4j → **FastAPI** + **Vite**.
+Windows-приложение (Python 3.10+, PySide6) для evidence-based проверки достоверности
+медицинской информации в интернете с **полностью локальной LLM** (llama.cpp / Ollama /
+LM Studio). Облачные AI API не используются (§95 ТЗ): приватность — URL и содержимое
+материалов не покидают ваш компьютер.
 
-Бренд-материалы: `media/` (гайдбук, логотипы, иконки, шрифты, key visual).  
-В UI подключены копии в `frontend/public/brand/`.
-
-## Быстрый старт
-
-### 1) LM Studio (Gemma)
-
-1. Открой LM Studio, загрузи **Gemma**.
-2. Включи **Local Server** (OpenAI-compatible), порт **1234**.
-3. Проверка: http://127.0.0.1:8000/api/health → блок `lm_studio.ready: true`.
-
-Опционально:
+## Как это работает (не «URL → LLM → правда/ложь»)
 
 ```
-LM_STUDIO_BASE_URL=http://127.0.0.1:1234/v1
-LM_STUDIO_MODEL=
-LM_STUDIO_TIMEOUT=300
-LM_STUDIO_MAX_TOKENS=500
+URL → загрузка материала → извлечение текста → выделение и декомпозиция claims
+    → план исследования → поиск источников (PubMed / Europe PMC / Crossref / web)
+    → оценка качества источников (6 параметров, тиры доказательств)
+    → извлечение evidence (подтверждения + опровержения, adversarial search)
+    → проверка противоречий и цитат → детерминированный verdict-engine
+    → структурированный отчёт (SQLite + audit trail + кэш)
 ```
 
-`LM_STUDIO_MODEL` пустой = берётся первая загруженная модель.
+LLM анализирует, классифицирует и извлекает — но **не является источником истины**:
+каждый вывод привязан к реально полученному источнику; итоговые verdict и confidence
+рассчитываются детерминированным Python-кодом.
 
-### 2) DeepSeek 3.2 (OpenRouter)
+## Требования
 
-В UI выбери модель **DeepSeek 3.2**. Ключ — через окружение или файл `.env` в корне проекта:
+- Windows 10/11 x64 (работает также на Linux/macOS)
+- Python 3.10–3.12
+- Локальный LLM-бэкенд (один из):
+  - **llama.cpp** (`llama-server` или `llama-cpp-python`) + GGUF-модель Qwen 7B/8B
+    (рекомендуется, основной backend);
+  - **Ollama** (`ollama pull qwen2.5:7b`, сервер на `127.0.0.1:11434`);
+  - **LM Studio** (Local Server, OpenAI-compatible API на `127.0.0.1:1234`).
 
-```
-OPENROUTER_API_KEY=sk-or-v1-...
-OPENROUTER_MODEL=deepseek/deepseek-v3.2
-OPENROUTER_MODEL_V4=deepseek/deepseek-v4-pro
-OPENROUTER_TIMEOUT=300
-OPENROUTER_MAX_TOKENS=4000
-OPENROUTER_EXTRACT_MAX_TOKENS=32000
-```
+Без LLM приложение тоже запускается: анализ деградирует до детерминированного
+режима с явным предупреждением в отчёте (graceful degradation).
 
-В UI: **DeepSeek 3.2** (`deepseek/deepseek-v3.2`) и **DeepSeek V4 Pro** (`deepseek/deepseek-v4-pro`).
+## Установка
 
-Для обеих моделей включён **reasoning** (`OPENROUTER_REASONING=1`). Для QA effort по умолчанию `high`; для извлечения графа — `medium` (`OPENROUTER_EXTRACT_REASONING_EFFORT`), чтобы JSON не обрезался thinking’ом. Отключить: `OPENROUTER_REASONING=0`. Для V4 Pro можно `OPENROUTER_REASONING_EFFORT=xhigh`.
-
-Если в Debug снова «обрезан по max_tokens» — подними `OPENROUTER_EXTRACT_MAX_TOKENS` или поставь `OPENROUTER_EXTRACT_REASONING_EFFORT=low`.
-
-Проверка: `/api/health` → `openrouter.ready: true` и `has_api_key: true`.
-
-Модель по умолчанию: `deepseek/deepseek-v3.2` (OpenRouter).
-
-### Backend (FastAPI)
-
-```bash
-cd c:\grafix
-python -m venv .venv
+```bat
+cd c:\factcheck
+py -3 -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-python -m app
 ```
 
-API: http://127.0.0.1:8000  
-Docs: http://127.0.0.1:8000/docs
+Опциональные зависимости (можно доустановить позже):
 
-### Frontend (Vite)
+| Пакет | Что даёт без него | Fallback |
+|---|---|---|
+| `trafilatura` | качественное извлечение текста статей | BeautifulSoup |
+| `PyMuPDF` | чтение PDF-материалов | сообщение «PDF недоступен» |
+| `llama-cpp-python` | прямой инференс GGUF | запустите `llama-server` |
+| `python-dotenv` | файл `.env` | переменные окружения ОС |
 
-```bash
-cd c:\grafix\frontend
-npm.cmd run dev
+### llama.cpp (основной backend)
+
+1. Скачайте бинарники: <https://github.com/ggml-org/llama.cpp/releases> (win-cuda/cpu).
+2. Запустите сервер с GGUF-моделью, например:
+
+```bat
+llama-server -m models\qwen2.5-7b-instruct-q4_k_m.gguf --port 8080 -c 8192
 ```
 
-UI: http://127.0.0.1:5173
+Модель (Qwen2.5-7B-Instruct, квант Q4_K_M) — любая Qwen 7B/8B GGUF; путь задаётся
+в `config/config.yaml`, в коде модель не зашита.
 
-В промпт можно загрузить `.txt` / `.docx` / `.doc` / `.rtf` / `.pdf` (кнопка или drag-and-drop).  
-Старый `.doc` читается через Microsoft Word (если установлен) или `antiword`/`catdoc`.
+### Ollama
 
-Галочка **«Искать в интернете»** у вопроса и у комментария сущности подмешивает сниппеты DuckDuckGo в промпт Gemma (без API-ключа).
-
-Приоритет извлечения: **LM Studio → датасет → MicroGPT → эвристики**.
-
-### История графов (SQLite)
-
-Каждый анализ автоматически сохраняется в `data/grafix_history.db`.  
-В UI: блок **История** (сворачивается) — вкладки прошлых итераций, кнопка **Сохранить**.
-
-```
-GET    /api/graphs
-GET    /api/graphs/{id}
-POST   /api/graphs
-PATCH  /api/graphs/{id}
-DELETE /api/graphs/{id}
+```bat
+winget install Ollama.Ollama
+ollama pull qwen2.5:7b
 ```
 
-Опционально путь к БД: `GRAFIX_HISTORY_DB=c:\grafix\data\grafix_history.db`
+### LM Studio
 
-Регистрации пользователей пока нет — общая локальная история на машине.
+Загрузите модель, включите Local Server (порт 1234), backend = `openai_compat`.
 
-### Neo4j (опционально)
+## Конфигурация
 
-```
-NEO4J_URI=bolt://localhost:7687
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=grafix
-```
+Единый configuration layer: `config/config.yaml` (+ секреты через `.env`, см.
+`.env.example`). Модель, бэкенды, лимиты (размер загрузки, редиректы, таймауты,
+число страниц/запросов), доверенные домены CONTROLLED MODE, тиры источников —
+только там. Смена backend:
 
-### Датасет STELLAR → обучение Gemma
-
-Исходники: `STELLAR-Complete-Clarity-main/.../texts/Alexey/`  
-Пары: проза (`graph_text_3/5/7…`) + разметка (`graph_text_4/6/8…`).
-
-```bash
-cd c:\grafix
-python import_stellar.py
+```yaml
+llm:
+  backend: llama.cpp   # llama.cpp | ollama | openai_compat
 ```
 
-Готово к LoRA / SFT:
+API-ключи поисковых источников (опционально, в `.env`):
+`NCBI_API_KEY`, `EuropePMC` работает без ключа, `CROSSREF_MAILTO` — contact для
+priority-доступа. Без ключей всё работает по публичным эндпоинтам.
 
-- `data/gemma_sft.jsonl` — chat-формат (system/user/assistant) для Unsloth / Axolotl / HF TRL  
-- `data/stellar_alexey.jsonl` — полные тексты + тройки  
-- `data/stellar_alexey_chunks.jsonl` — короткие примеры  
+## Запуск
 
-LM Studio сам не обучает: тренируешь снаружи, потом грузишь адаптер/модель обратно в LM Studio.
+```bat
+python run.py            :: графический интерфейс
+run.bat                  :: то же самое на Windows
+python run.py --cli "https://example.org/article" --mode research [--json out.json]
+```
+
+GUI: поле URL → режим (Контролируемый / Исследовательский) → кнопка «ПРОВЕРИТЬ» →
+прогресс по этапам → итоговый экран (общий вердикт, сводка, список claims с
+«Подробнее», кликабельные источники). Внутренние prompts / chain-of-thought /
+стектрейсы пользователю не показываются — только в лог (`data/logs/factcheck.log`,
+`logging.level: DEBUG` для разработчика).
+
+## Режимы
+
+- **CONTROLLED** — доказательства берутся только из доверенных категорий
+  (WHO, CDC, FDA, EMA, NICE, PubMed, Cochrane, Europe PMC, Crossref, госорганы,
+  признанные организации, научные издательства). Список — в конфигурации.
+- **RESEARCH** — расширенный поиск: система сама формирует запросы (нейтральные,
+  научные, первичные исследования, обзорные, guideline, контр-аргументация),
+  открывает страницы, обязана выполнить adversarial search (попытку опровергнуть
+  предварительный вердикт) и независимо оценить каждый источник.
+
+## Хранение данных и приватность
+
+SQLite: `data/factcheck.db` (projects, documents, sources, claims, evidence,
+search_queries, verdicts, reports, audit_events) + кэш загруженных документов по
+(URL, content hash). История анализа, отчёты, логи — локально. Ничего не
+отправляется в сторонние AI-сервисы.
+
+## Безопасность
+
+- SSRF-защита: блокируются localhost/private IP/file:// и metadata-endpoint'ы,
+  редиректы проверяются по каждому шагу и ограничены;
+- весь веб-контент размечается как UNTRUSTED DATA и подставляется в промпт строго
+  после системных инструкций (защита от prompt injection);
+- JavaScript не исполняется, приоритет httpx → HTML-parser; лимиты размера,
+  страниц, запросов и общий timeout анализа;
+- ошибка любого источника/провайдера не останавливает pipeline.
+
+## Тесты
+
+```bat
+pip install -r requirements-dev.txt
+pytest                # unit + integration + security (сеть и LLM мокнируются)
+python -m compileall .
+ruff check app tests
+```
+
+Тесты НЕ требуют интернета и реальной модели. Мок — только в тестах; в рабочем
+режиме фиктивных источников/verdict нет: при недоступности API в отчёт попадают
+«Ограничения», а недоказуемые claims получают формальный
+`INSUFFICIENT_EVIDENCE` с указанием причины.
+
+## Ограничения системы
+
+Это **система проверки информации**, а не диагностика и не персональный врач:
+диагнозы не ставятся, лечение не назначается. Результаты носят справочный
+характер и не заменяют консультацию медицинского специалиста.
+
+## Частые проблемы
+
+| Симптом | Решение |
+|---|---|
+| «LLM недоступна… детерминированный режим» | запустите llama-server/Ollama/LM Studio; проверьте `llm.backend` и URL в config.yaml |
+| «Модель 'qwen2.5:7b' не найдена» | `ollama pull qwen2.5:7b` или измените `llm.ollama_model` |
+| GUI не открывается | `pip install PySide6`; либо `python run.py --cli URL` |
+| PDF не читается | `pip install PyMuPDF` |
+| Мало источников / много INSUFFICIENT_EVIDENCE | включён CONTROLLED-режим или rate-limit сети; попробуйте RESEARCH, увеличьте `research.min_sources_per_claim` |
+| Сайт требует JS | текст не извлечён — это ожидаемое поведение (безопасность); попробуйте другой материал |
+
+## Структура проекта
+
+```
+app/            core/models.py, config.py, pipeline.py, cli.py, dependencies.py
+  llm/          base (structured generate+repair), llamacpp, ollama, openai_compat
+  security/     urlguard (SSRF), sanitization (prompt injection)
+  content/      fetcher (httpx, лимиты, кэш), extractor (trafilatura/bs4/PDF)
+  claims/       extraction + decomposition + classification + importance
+  research/     planner, providers (PubMed/EuropePMC/Crossref/web), dedup
+  sources/      evaluator (6 параметров качества), graph (независимость)
+  evidence/     extractor (цитаты+верификация), contradiction analyst
+  verdict/      детерминированный движок (verdict+confidence)
+  report/       генератор отчёта
+  storage/      SQLite + audit + cache
+  ui/           PySide6 главное окно
+prompts/        тексты system-промптов по ролям (вне кода)
+config/         config.yaml
+docs/           architecture.md, data_model.md, security_model.md
+tests/          pytest suite (unit/integration/security)
+data/, reports/ локальные данные приложения (не коммитятся)
+run.py, run.bat точки входа
+```
