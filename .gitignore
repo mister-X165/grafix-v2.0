@@ -2,10 +2,7 @@
 __pycache__/
 *.pyc
 
-# Virtual environment
-.venv/
-
-# Environment and secrets
+# Environment and config
 .env
 .env.local
 .env.*

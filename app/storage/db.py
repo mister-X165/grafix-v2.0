@@ -71,7 +71,21 @@ class Database:
         self._tx = threading.RLock()
         with self._tx:
             self._conn.executescript(SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        """PRAGMA table_info-миграции (паттерн graph/history.py): добавляем
+        недостающие колонки поверх существующих БД без потери данных."""
+        migrations = {
+            "projects": {"title": "TEXT DEFAULT ''", "duration_s": "REAL DEFAULT 0"},
+        }
+        for table, cols in migrations.items():
+            have = {r["name"] for r in
+                    self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            for col, decl in cols.items():
+                if col not in have:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
     @classmethod
     def instance(cls, cfg: Optional[AppConfig] = None) -> "Database":
@@ -109,11 +123,22 @@ class Database:
     def save_project(self, p: Project) -> None:
         self._upsert("projects", {"id": p.id, "input_url": p.input_url, "mode": p.mode.value,
                                   "created_at": p.created_at, "status": p.status,
-                                  "model_json": p.model_info.model_dump_json()})
+                                  "model_json": p.model_info.model_dump_json(),
+                                  "title": p.title, "duration_s": p.duration_s})
 
     def update_project_status(self, project_id: str, status: str) -> None:
         with self._tx:
             self._conn.execute("UPDATE projects SET status=? WHERE id=?", (status, project_id))
+            self._conn.commit()
+
+    def finish_project(self, project_id: str, *, status: str, title: str = "",
+                       duration_s: float = 0.0) -> None:
+        """Итоговая запись проекта: статус + метаданные для списка истории."""
+        with self._tx:
+            self._conn.execute(
+                "UPDATE projects SET status=?, title=COALESCE(NULLIF(?,''),title),"
+                " duration_s=? WHERE id=?",
+                (status, title, duration_s, project_id))
             self._conn.commit()
 
     def save_document(self, project_id: str, d: Document) -> None:
@@ -209,6 +234,34 @@ class Database:
         if not row:
             return None
         return Report.model_validate_json(row["data_json"])
+
+    def report_path(self, project_id: str) -> Path:
+        """Путь к JSON-файлу отчёта (пишется в save_report)."""
+        return self.cfg_reports_dir / f"{project_id}.json"
+
+    def delete_project(self, project_id: str) -> bool:
+        """Удалить анализ и все его данные из истории (§ история: удаление)."""
+        tables = ("documents", "sources", "claims", "evidence", "source_scores",
+                  "search_queries", "verdicts", "reports", "audit_events", "projects")
+        with self._tx:
+            for t in tables:
+                key = "id" if t == "projects" else "project_id"
+                self._conn.execute(f"DELETE FROM {t} WHERE {key}=?", (project_id,))
+            cur = self._conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
+            self._conn.commit()
+        try:
+            p = self.report_path(project_id)
+            if p.exists():
+                p.unlink()
+        except OSError:
+            pass
+        return cur.rowcount > 0
+
+    def clear_cache(self) -> int:
+        with self._tx:
+            cur = self._conn.execute("DELETE FROM doc_cache")
+            self._conn.commit()
+        return cur.rowcount
 
     def audit_trail(self, project_id: str) -> list[AuditEvent]:
         with self._tx:

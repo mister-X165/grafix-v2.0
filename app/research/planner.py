@@ -51,27 +51,53 @@ class ResearchPlanner:
         self.cfg = cfg or get_config()
 
     def plan(self, claim: Claim, project_id: str) -> list[SearchQuery]:
+        """Синхронная версия (CLI/тесты)."""
         if self.llm is not None:
             try:
-                system = get_system_prompt("research_planner", self.cfg.prompts_dir)
-                messages = build_messages(
-                    system,
-                    f"Составь исследовательский план для claim: {claim.normalized_text}",
-                    {"claim": claim.text + ("\nКонтекст: " + claim.context if claim.context else "")},
-                )
-                plan = self.llm.structured_generate(messages, _Plan)
-                items = [q for q in plan.queries if q.query.strip()]
-                if items:
-                    seen_purposes = {q.purpose for q in items}
-                    # гарантируем наличие contradiction-запроса (§17B, §18)
-                    if QueryPurpose.CONTRADICTION not in seen_purposes:
-                        items.append(_PlannedQuery(query=self._fallback(claim, QueryPurpose.CONTRADICTION),
-                                                   purpose=QueryPurpose.CONTRADICTION))
-                    return [SearchQuery(project_id=project_id, claim_id=claim.id,
-                                        provider="", query=q.query.strip()[:200],
-                                        purpose=q.purpose) for q in items[:8]]
+                plan = self.llm.structured_generate(self._messages(claim), _Plan)
+                return self._to_queries(plan, claim, project_id)
             except Exception as e:  # graceful degradation (§50): любая ошибка LLM — fallback
                 log.warning("planner LLM failed for %s: %s — template plan", claim.id, e)
+        return self._template_plan(claim, project_id)
+
+    async def plan_async(self, claim: Claim, project_id: str) -> list[SearchQuery]:
+        """Асинхронная версия для pipeline: LLM вне event loop."""
+        if self.llm is not None:
+            try:
+                plan = await self.llm.structured_generate_async(self._messages(claim), _Plan)
+                res = self._to_queries(plan, claim, project_id)
+                if res:
+                    return res
+            except Exception as e:  # graceful degradation (§50): любая ошибка LLM — fallback
+                log.warning("planner LLM failed for %s: %s — template plan", claim.id, e)
+        return self._template_plan(claim, project_id)
+
+    def _messages(self, claim: Claim) -> list[dict]:
+        system = get_system_prompt("research_planner", self.cfg.prompts_dir)
+        return build_messages(
+            system,
+            f"Составь исследовательский план для claim: {claim.normalized_text}",
+            {"claim": claim.text + ("\nКонтекст: " + claim.context if claim.context else "")},
+        )
+
+    def _to_queries(self, plan: _Plan, claim: Claim, project_id: str) -> list[SearchQuery]:
+        items = [q for q in plan.queries if q.query.strip()]
+        if not items:
+            return []
+        seen_purposes = {q.purpose for q in items}
+        # гарантируем наличие contradiction-запроса (§17B, §18)
+        if QueryPurpose.CONTRADICTION not in seen_purposes:
+            items.append(_PlannedQuery(query=self._fallback(claim, QueryPurpose.CONTRADICTION),
+                                       purpose=QueryPurpose.CONTRADICTION))
+        return [SearchQuery(project_id=project_id, claim_id=claim.id,
+                            query=q.query.strip()[:200],
+                            purpose=q.purpose) for q in items[:8]]
+
+    def _template_plan(self, claim: Claim, project_id: str) -> list[SearchQuery]:
+        """Публичное имя (используется pipeline как fallback)."""
+        return self.template_plan(claim, project_id)
+
+    def template_plan(self, claim: Claim, project_id: str) -> list[SearchQuery]:
         # детерминированный шаблонный план
         purposes = [QueryPurpose.NEUTRAL, QueryPurpose.SCIENTIFIC, QueryPurpose.PRIMARY,
                     QueryPurpose.REVIEW, QueryPurpose.GUIDELINE, QueryPurpose.CONTRADICTION]

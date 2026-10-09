@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -29,13 +30,15 @@ from app.config import AppConfig, get_config
 from app.content.extractor import extract_document
 from app.content.fetcher import HttpFetcher, RequestBudget, extract_pdf_text
 from app.claims.extractor import ClaimExtractor
-from app.core.models import (AnalysisMode, AuditEvent, ContentNature, Document,
+from app.core.models import (AnalysisMode, AuditEvent, Claim, ContentNature, Document,
                              Evidence, ModelInfo, PipelineStage, Project, Report,
                              SearchQuery, SearchResult, SourceMeta, SourceScores,
                              Verdict, VerdictLabel)
 from app.evidence.contradiction import ContradictionAnalyst
 from app.evidence.extractor import EvidenceExtractor
-from app.llm.base import LLMProvider, LLMUnavailableError, create_provider
+from app.llm.base import (CancellationRequested, LLMProvider, LLMUnavailableError,
+                          _generic_structured_async, create_provider,
+                          to_thread_complete, to_thread_health_check)
 from app.report.generator import ReportGenerator
 from app.research.dedup import cluster_independent, dedup_results, dedup_sources
 from app.research.planner import ResearchPlanner
@@ -73,14 +76,22 @@ class FactCheckPipeline:
 
     def __init__(self, cfg: Optional[AppConfig] = None,
                  llm: Optional[LLMProvider] = None,
-                 db: Optional[Database] = None) -> None:
+                 db: Optional[Database] = None,
+                 stop_event: Optional["threading.Event"] = None) -> None:
         self.cfg = cfg or get_config()
         self.db = db or Database.instance(self.cfg)
         self._llm_override = llm
         self.llm: Optional[LLMProvider] = None
         self.model_info = ModelInfo()
+        #: поток отмены анализа (ставится UI-воркером; см. app.llm.base)
+        self.stop_event = stop_event
 
     # ------------------------------------------------------------- audit ---
+    def _check_cancelled(self) -> None:
+        """Точечная проверка отмены между этапами (стабильность: UI не «зависает»)."""
+        if self.stop_event is not None and self.stop_event.is_set():
+            raise CancellationRequested("Анализ остановлен пользователем.")
+
     def _audit(self, project_id: str, stage: str, event: str, **detail) -> None:
         try:
             self.db.audit(AuditEvent(project_id=project_id, stage=stage,
@@ -101,6 +112,10 @@ class FactCheckPipeline:
             progress: Optional[ProgressCallback] = None) -> PipelineOutcome:
         try:
             return asyncio.run(self.run_async(url, mode, progress))
+        except CancellationRequested:
+            log.info("analysis cancelled")
+            return PipelineOutcome(error="Анализ остановлен пользователем.",
+                                   duration_s=0.0)
         except Exception as e:  # последняя линия обороны: UI не должен видеть crash (§50)
             log.exception("pipeline crashed")
             return PipelineOutcome(error=f"Внутренняя ошибка анализа: {type(e).__name__}: {e}")
@@ -121,6 +136,9 @@ class FactCheckPipeline:
                 "Проверьте настройки LLM и доступность источников."),
                 duration_s=time.monotonic() - t0)
             return outcome
+        except CancellationRequested:
+            return PipelineOutcome(error="Анализ остановлен пользователем.",
+                                   duration_s=time.monotonic() - t0)
 
     async def _run_inner(self, url: str, mode: AnalysisMode,
                          progress: Optional[ProgressCallback],
@@ -139,17 +157,35 @@ class FactCheckPipeline:
         self._audit(pid, "start", "analysis_started", url=url, mode=mode.value)
 
         # ---- LLM health check (§4, §51) ------------------------------------
+        self._check_cancelled()
         llm = self._llm_override
-        if llm is None:
+        if llm is not None:
+            # duck-typed провайдеры (тестовые заглушки, сторонние адаптеры)
+            # могут не наследовать LLMProvider — подмешиваем базовые async-методы,
+            # чтобы блокирующий complete() исполнялся в executor, а не в loop.
+            if not callable(getattr(llm, "structured_generate_async", None)):
+                llm.structured_generate_async = (
+                    lambda msgs, schema, **kw: _generic_structured_async(
+                        llm, msgs, schema, **kw))
+            if not callable(getattr(llm, "check_cancelled", None)):
+                llm.check_cancelled = lambda: None
+            if getattr(llm, "stop_event", None) is None and self.stop_event is not None:
+                llm.stop_event = self.stop_event
+        else:
             try:
                 llm = create_provider(cfg)
-                ready, msg = llm.health_check()
+                if self.stop_event is not None:
+                    llm.stop_event = self.stop_event
+                # сетевой health_check — вне event loop (иначе блокирует цикл на таймаут)
+                ready, msg = await to_thread_health_check(llm, self.stop_event)
                 if not ready:
                     limitations.append(f"LLM недоступна ({msg}); используется "
                                        "детерминированный режим без нейросетевого анализа.")
                     llm = None
                 else:
                     self.model_info = llm.model_info()
+            except CancellationRequested:
+                raise
             except LLMUnavailableError as e:
                 limitations.append(f"LLM недоступна: {e}. Детерминированный режим.")
                 llm = None
@@ -162,6 +198,7 @@ class FactCheckPipeline:
         self.db.save_project(project)
 
         # ---- STAGE 1: acquire material -------------------------------------
+        self._check_cancelled()
         self._emit(progress, PipelineStage.ACQUIRE)
         try:
             fetched = await asyncio.wait_for(fetcher.fetch(url),
@@ -190,6 +227,8 @@ class FactCheckPipeline:
             outcome.duration_s = time.monotonic() - t0
             return outcome
         self.db.save_document(pid, doc)
+        project.title = (doc.title or url)[:200]
+        self.db.save_project(project)
         self._audit(pid, "extract", "text_extracted", chars=len(doc.text),
                     title=doc.title[:120], nature=doc.content_nature.value)
         if doc.content_nature != ContentNature.INFORMATION:
@@ -197,9 +236,10 @@ class FactCheckPipeline:
                                "коммерческий интерес отображён в отчёте (§41).")
 
         # ---- STAGE 3: claims ------------------------------------------------
+        self._check_cancelled()
         self._emit(progress, PipelineStage.CLAIMS)
         extractor = ClaimExtractor(llm, cfg)
-        claims = extractor.extract(doc)
+        claims = await extractor.extract_async(doc)
         for c in claims:
             self.db.save_claim(pid, c)
         self._audit(pid, "claims", "claims_extracted", count=len(claims),
@@ -225,9 +265,21 @@ class FactCheckPipeline:
                                "материала без внешних доказательств (§49).")
 
         # ---- STAGE 4: research plan ----------------------------------------
+        self._check_cancelled()
         self._emit(progress, PipelineStage.PLAN)
         planner = ResearchPlanner(llm, cfg)
-        plans: dict[str, list] = {c.id: planner.plan(c, pid) for c in to_check}
+        # планы для всех claims строятся параллельно (LLM-вызовы в executor'е)
+        plan_pairs = await asyncio.gather(
+            *[planner.plan_async(c, pid) for c in to_check], return_exceptions=True)
+        plans: dict[str, list] = {}
+        for c, p in zip(to_check, plan_pairs):
+            if isinstance(p, CancellationRequested):
+                raise p
+            if isinstance(p, BaseException):
+                log.warning("plan failed for %s: %s — template plan", c.id, p)
+                plans[c.id] = planner.template_plan(c, pid)
+            else:
+                plans[c.id] = p
         n_queries = sum(len(v) for v in plans.values())
         self._audit(pid, "plan", "research_planned", queries=n_queries,
                     claims=len(to_check))
@@ -367,10 +419,12 @@ class FactCheckPipeline:
                         verified=sum(1 for e in evidence if e.quote_verified))
 
         # ---- STAGES 6–7: preliminary verdict + adversarial revision --------
+        self._check_cancelled()
         self._emit(progress, PipelineStage.CONTRADICTION)
         analyst = ContradictionAnalyst(llm, cfg)
         verdicts: list[Verdict] = []
-        for claim in to_check:
+
+        async def _verdict_for(claim: Claim) -> Verdict:
             claim_ev = [e for e in evidence if e.claim_id == claim.id]
             src_ids = {e.source_id for e in claim_ev}
             s_by_id = {sid: sources[sid] for sid in src_ids if sid in sources}
@@ -381,9 +435,14 @@ class FactCheckPipeline:
             hint = None
             exaggeration = ""
             if cfg.research.adversarial_search and claim_ev:
-                ana = analyst.analyze(claim, prelim, claim_ev, s_by_id)
-                exaggeration = ana["exaggeration"]
-                hint = ana["revised_label_hint"]
+                try:
+                    ana = await analyst.analyze_async(claim, prelim, claim_ev, s_by_id)
+                    exaggeration = ana["exaggeration"]
+                    hint = ana["revised_label_hint"]
+                except CancellationRequested:
+                    raise
+                except Exception as e:  # adversarial-шаг опционален (§50)
+                    log.warning("contradiction analysis failed (%s): %s", claim.id, e)
             final = compute_verdict(claim, summary, exaggeration=exaggeration,
                                     llm_skeptical_hint=hint,
                                     min_sources=cfg.research.min_sources_per_claim)
@@ -391,8 +450,21 @@ class FactCheckPipeline:
                                              if e.direction.value == "SUPPORTS"]
             final.contradicting_evidence_ids = [e.id for e in claim_ev
                                                 if e.direction.value == "CONTRADICTS"]
-            verdicts.append(final)
-            self.db.save_verdict(pid, final)
+            return final
+
+        vres = await asyncio.gather(*[_verdict_for(c) for c in to_check],
+                                    return_exceptions=True)
+        for r in vres:
+            if isinstance(r, CancellationRequested):
+                raise r
+            if isinstance(r, BaseException):
+                log.warning("verdict task failed: %s", r)
+                continue
+            verdicts.append(r)
+            self.db.save_verdict(pid, r)
+
+        self._check_cancelled()
+        self._emit(progress, PipelineStage.VERDICT)
 
         insufficient = sum(1 for v in verdicts
                            if v.label == VerdictLabel.INSUFFICIENT_EVIDENCE)
@@ -407,16 +479,17 @@ class FactCheckPipeline:
         # ---- STAGE 8: report + quality gate --------------------------------
         self._emit(progress, PipelineStage.REPORT)
         gen = ReportGenerator(llm, cfg)
-        report = gen.build(project_id=pid, url=url, mode=mode, claims=claims,
-                           verdicts=verdicts, sources=list(sources.values()),
-                           scores=list(scores.values()), evidence=evidence,
-                           limitations=limitations, model_info=self.model_info)
+        report = await gen.build_async(project_id=pid, url=url, mode=mode, claims=claims,
+                                       verdicts=verdicts, sources=list(sources.values()),
+                                       scores=list(scores.values()), evidence=evidence,
+                                       limitations=limitations, model_info=self.model_info)
         report_path = self.db.save_report(report)
-        self.db.update_project_status(pid, "DONE")
+        outcome.duration_s = time.monotonic() - t0
+        self.db.finish_project(pid, status="DONE", title=project.title,
+                               duration_s=outcome.duration_s)
         self._audit(pid, "report", "report_saved", path=str(report_path))
 
         outcome.report = report
-        outcome.duration_s = time.monotonic() - t0
         return outcome
 
     # ------------------------------------------------------------ helpers --
