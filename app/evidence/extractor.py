@@ -80,7 +80,10 @@ class EvidenceExtractor:
             {"source_fragment": frag},
         )
         try:
-            result = self.llm.structured_generate(messages, _EvidenceList)
+            # ВАЖНО (стабильность): именно async-путь — синхронный
+            # structured_generate() внутри event loop сериализует конвейер и
+            # блокирует UI на время ответа модели (десятки секунд).
+            result = await self.llm.structured_generate_async(messages, _EvidenceList)
         except Exception as e:  # graceful degradation (§50): любая ошибка LLM — fallback
             log.warning("evidence extraction failed (%s/%s): %s", claim.id, source.url[:60], e)
             return self._lexical_fallback(claim, source)

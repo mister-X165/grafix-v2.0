@@ -283,6 +283,8 @@ class Project(BaseModel):
     created_at: str = Field(default_factory=_utcnow)
     status: str = "NEW"   # NEW | RUNNING | DONE | FAILED
     model_info: ModelInfo = Field(default_factory=ModelInfo)
+    title: str = ""       # заголовок материала (для списка истории)
+    duration_s: float = 0.0
 
 
 class AuditEvent(BaseModel):

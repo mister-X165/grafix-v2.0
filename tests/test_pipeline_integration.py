@@ -175,6 +175,9 @@ class ScriptedLLM:
         raw = self._MAP.get(schema.__name__, "{}")
         return schema.model_validate(json.loads(raw))
 
+    async def structured_generate_async(self, messages, schema, **kw):
+        return self.structured_generate(messages, schema, **kw)
+
 
 def _patch_network(monkeypatch, client_factory):
     monkeypatch.setattr("app.content.fetcher.httpx.AsyncClient", client_factory)

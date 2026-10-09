@@ -89,6 +89,33 @@ class ReportGenerator:
               sources: list[SourceMeta], scores: list[SourceScores],
               evidence: list[Evidence], limitations: list[str],
               model_info: ModelInfo) -> Report:
+        """Синхронная версия (CLI/тесты): вне event loop."""
+        return self._build_core(project_id=project_id, url=url, mode=mode,
+                                claims=claims, verdicts=verdicts, sources=sources,
+                                scores=scores, evidence=evidence,
+                                limitations=limitations, model_info=model_info,
+                                narrative=None)
+
+    async def build_async(self, *, project_id: str, url: str, mode: AnalysisMode,
+                          claims: list[Claim], verdicts: list[Verdict],
+                          sources: list[SourceMeta], scores: list[SourceScores],
+                          evidence: list[Evidence], limitations: list[str],
+                          model_info: ModelInfo) -> Report:
+        """Асинхронная версия для pipeline: LLM-нарратив вне event loop (§ стабильность)."""
+        report = self._build_core(project_id=project_id, url=url, mode=mode,
+                                  claims=claims, verdicts=verdicts, sources=sources,
+                                  scores=scores, evidence=evidence,
+                                  limitations=limitations, model_info=model_info,
+                                  narrative=None, skip_narrative=True)
+        report.summary = await self._narrative_async(report)
+        return report
+
+    def _build_core(self, *, project_id: str, url: str, mode: AnalysisMode,
+                    claims: list[Claim], verdicts: list[Verdict],
+                    sources: list[SourceMeta], scores: list[SourceScores],
+                    evidence: list[Evidence], limitations: list[str],
+                    model_info: ModelInfo, narrative: Optional[str] = None,
+                    skip_narrative: bool = False) -> Report:
         sources_by_id = {s.id: s for s in sources}
         verdicts, gate_problems = quality_gate(claims, evidence, sources_by_id, verdicts)
         limitations += [f"Quality gate: {p}" for p in gate_problems]
@@ -100,7 +127,8 @@ class ReportGenerator:
                         scores=scores, evidence=evidence, limitations=limitations,
                         methodology=self._methodology(mode), model_info=model_info)
         report.counts = report.verdict_counts()
-        report.summary = self._narrative(report)
+        if not skip_narrative:
+            report.summary = narrative if narrative is not None else self._narrative(report)
         return report
 
     def _methodology(self, mode: AnalysisMode) -> str:
@@ -113,29 +141,55 @@ class ReportGenerator:
                 "и формулирования объяснений, но не как источник фактов. " + DISCLAIMER)
 
     def _narrative(self, report: Report) -> str:
-        facts = self._facts_block(report)
-        if self.llm is not None:
+        """Синхронная версия (CLI/тесты)."""
+        messages = self._narrative_messages(report)
+        if messages is not None:
             try:
-                system = get_system_prompt("report_generator", self.cfg.prompts_dir)
-                messages = build_messages(
-                    system,
-                    "Напиши краткое объяснение результата проверки на русском.",
-                    {"analysis_data": facts},
-                )
                 res = self.llm.structured_generate(messages, _Narrative)
-                if res.summary.strip():
-                    urls = {s.url for s in report.sources}
-                    # анти-галлюцинация: если LLM вставила URL — оставляем только реальные
-                    import re as _re
-                    clean = " ".join(u for u in _re.findall(r"https?://\S+", res.summary) if u in urls)
-                    suspicious = bool(_re.findall(r"https?://\S+", res.summary)) and not clean
-                    if not suspicious:
-                        extra = f" Главная проблема: {res.key_problem}" if res.key_problem else ""
-                        return res.summary.strip() + extra
-                    log.warning("report narrative contained unknown URLs — dropped")
+                clean = self._sanitize_narrative(res, report)
+                if clean is not None:
+                    return clean
             except Exception as e:  # graceful degradation (§50): любая ошибка LLM — fallback
                 log.warning("narrative LLM failed: %s — deterministic summary", e)
         return self._deterministic_summary(report)
+
+    async def _narrative_async(self, report: Report) -> str:
+        """Асинхронная версия для pipeline: LLM-вызов вне event loop (стабильность)."""
+        messages = self._narrative_messages(report)
+        if messages is not None:
+            try:
+                res = await self.llm.structured_generate_async(messages, _Narrative)
+                clean = self._sanitize_narrative(res, report)
+                if clean is not None:
+                    return clean
+            except Exception as e:  # graceful degradation (§50): любая ошибка LLM — fallback
+                log.warning("narrative LLM failed: %s — deterministic summary", e)
+        return self._deterministic_summary(report)
+
+    def _narrative_messages(self, report: Report):
+        if self.llm is None:
+            return None
+        system = get_system_prompt("report_generator", self.cfg.prompts_dir)
+        return build_messages(
+            system,
+            "Напиши краткое объяснение результата проверки на русском.",
+            {"analysis_data": self._facts_block(report)},
+        )
+
+    @staticmethod
+    def _sanitize_narrative(res: _Narrative, report: Report) -> Optional[str]:
+        if not res.summary.strip():
+            return None
+        import re as _re
+        urls = {s.url for s in report.sources}
+        # анти-галлюцинация: если LLM вставила URL — оставляем только реальные
+        found = _re.findall(r"https?://\S+", res.summary)
+        clean = " ".join(u for u in found if u in urls)
+        if found and not clean:
+            log.warning("report narrative contained unknown URLs — dropped")
+            return None
+        extra = f" Главная проблема: {res.key_problem}" if res.key_problem else ""
+        return res.summary.strip() + extra
 
     @staticmethod
     def _facts_block(report: Report) -> str:

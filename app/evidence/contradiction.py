@@ -64,27 +64,56 @@ class ContradictionAnalyst:
 
     def analyze(self, claim: Claim, preliminary: Verdict,
                 evidence: list[Evidence], sources_by_id: dict[str, SourceMeta]) -> dict:
-        """Возвращает dict с полями: exaggeration, counter_strength, revised_label_hint."""
-        quotes = [e.text for e in evidence if e.quote_verified]
-        det_gap = detect_semantic_gap(claim.text, quotes)
-        counters = [e for e in evidence if e.direction == EvidenceDirection.CONTRADICTS]
-        counter_strength = sum(e.strength * e.relevance for e in counters)
+        """Синхронная версия (CLI/тесты): вне event loop.
 
+        Возвращает dict с полями: exaggeration, counter_strength, revised_label_hint.
+        """
+        quotes = [e.text for e in evidence if e.quote_verified]
         llm_result: Optional[_ContradictionResult] = None
-        if self.llm is not None and quotes:
-            system = get_system_prompt("contradiction_analyzer", self.cfg.prompts_dir)
-            src_lines = "\n".join(f"- [{sources_by_id[e.source_id].url}] {e.text}"
-                                  for e in evidence if e.source_id in sources_by_id)[:6000]
-            messages = build_messages(
-                system,
-                f"Claim: {claim.text}\nПредварительный вывод: {preliminary.label.value} "
-                f"({preliminary.explanation[:300]})\nПроверь его устойчивость.",
-                {"evidence_quotes": src_lines},
-            )
+        messages = self._messages(claim, preliminary, evidence, sources_by_id, quotes)
+        if messages is not None:
             try:
                 llm_result = self.llm.structured_generate(messages, _ContradictionResult)
             except Exception as e:  # graceful degradation (§50): любая ошибка LLM — fallback
                 log.warning("contradiction LLM pass failed: %s — deterministic only", e)
+        return self._finalize(claim, evidence, quotes, llm_result)
+
+    async def analyze_async(self, claim: Claim, preliminary: Verdict,
+                            evidence: list[Evidence],
+                            sources_by_id: dict[str, SourceMeta]) -> dict:
+        """Асинхронная версия для pipeline: LLM-вызов вне event loop (стабильность)."""
+        quotes = [e.text for e in evidence if e.quote_verified]
+        llm_result: Optional[_ContradictionResult] = None
+        messages = self._messages(claim, preliminary, evidence, sources_by_id, quotes)
+        if messages is not None:
+            try:
+                llm_result = await self.llm.structured_generate_async(
+                    messages, _ContradictionResult)
+            except Exception as e:  # graceful degradation (§50): любая ошибка LLM — fallback
+                log.warning("contradiction LLM pass failed: %s — deterministic only", e)
+        return self._finalize(claim, evidence, quotes, llm_result)
+
+    def _messages(self, claim: Claim, preliminary: Verdict, evidence: list[Evidence],
+                  sources_by_id: dict[str, SourceMeta], quotes: list[str]):
+        """Собрать LLM-запрос или вернуть None, если LLM-проход неприменим."""
+        if self.llm is None or not quotes:
+            return None
+        system = get_system_prompt("contradiction_analyzer", self.cfg.prompts_dir)
+        src_lines = "\n".join(f"- [{sources_by_id[e.source_id].url}] {e.text}"
+                              for e in evidence if e.source_id in sources_by_id)[:6000]
+        return build_messages(
+            system,
+            f"Claim: {claim.text}\nПредварительный вывод: {preliminary.label.value} "
+            f"({preliminary.explanation[:300]})\nПроверь его устойчивость.",
+            {"evidence_quotes": src_lines},
+        )
+
+    @staticmethod
+    def _finalize(claim: Claim, evidence: list[Evidence], quotes: list[str],
+                  llm_result: Optional[_ContradictionResult]) -> dict:
+        det_gap = detect_semantic_gap(claim.text, quotes)
+        counters = [e for e in evidence if e.direction == EvidenceDirection.CONTRADICTS]
+        counter_strength = sum(e.strength * e.relevance for e in counters)
 
         exaggeration = det_gap or (llm_result.semantic_exaggeration if llm_result else "")
         hint: Optional[VerdictLabel] = None

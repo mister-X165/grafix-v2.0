@@ -76,15 +76,8 @@ class ClaimExtractor:
         self.cfg = cfg or get_config()
 
     def extract(self, doc: Document) -> list[Claim]:
-        system = get_system_prompt("claim_extractor", self.cfg.prompts_dir)
-        text = doc.text[: self.cfg.limits.max_context_chars]
-        if contains_injection(doc.text):
-            log.warning("prompt injection markers detected in document %s (kept as data)", doc.url)
-        messages = build_messages(
-            system,
-            f"Извлеки claims из материала «{doc.title}». Ответь строго JSON по инструкции.",
-            {"document": text},
-        )
+        """Синхронная версия (CLI/тесты): вне event loop."""
+        messages = self._build_messages(doc)
         try:
             result = self.llm.structured_generate(messages, _ClaimsList)
             claims = self._to_claims(result.claims, doc)
@@ -94,6 +87,30 @@ class ClaimExtractor:
         except Exception as e:  # graceful degradation (§50, §76): любая ошибка LLM — fallback
             log.error("claim extraction failed: %s — using heuristic fallback", e)
         return heuristic_claims(doc)
+
+    async def extract_async(self, doc: Document) -> list[Claim]:
+        """Асинхронная версия для pipeline: LLM-вызов вне event loop (§ стабильность)."""
+        messages = self._build_messages(doc)
+        try:
+            result = await self.llm.structured_generate_async(messages, _ClaimsList)
+            claims = self._to_claims(result.claims, doc)
+            if claims:
+                return claims
+            log.info("LLM returned no claims; falling back to heuristic extraction")
+        except Exception as e:  # graceful degradation (§50, §76): любая ошибка LLM — fallback
+            log.error("claim extraction failed: %s — using heuristic fallback", e)
+        return heuristic_claims(doc)
+
+    def _build_messages(self, doc: Document) -> list[dict]:
+        system = get_system_prompt("claim_extractor", self.cfg.prompts_dir)
+        text = doc.text[: self.cfg.limits.max_context_chars]
+        if contains_injection(doc.text):
+            log.warning("prompt injection markers detected in document %s (kept as data)", doc.url)
+        return build_messages(
+            system,
+            f"Извлеки claims из материала «{doc.title}». Ответь строго JSON по инструкции.",
+            {"document": text},
+        )
 
     def _to_claims(self, items: list[_LLMClaim], doc: Document) -> list[Claim]:
         out: list[Claim] = []

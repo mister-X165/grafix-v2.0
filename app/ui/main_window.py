@@ -12,13 +12,14 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Optional
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
-    QButtonGroup, QFrame, QHBoxLayout, QLabel, QLineEdit, QProgressBar,
-    QPushButton, QRadioButton, QScrollArea, QVBoxLayout, QWidget,
+    QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu,
+    QProgressBar, QPushButton, QRadioButton, QScrollArea, QVBoxLayout, QWidget,
 )
 from PySide6.QtCore import QUrl
 
@@ -26,9 +27,13 @@ from app.config import get_config
 from app.core.models import (AnalysisMode, Claim, EvidenceDirection, PipelineStage,
                              Report, VerdictLabel)
 from app.dependencies import check_dependencies
+from app.graph.exporter import export_graph_html
+from app.graph.view import GraphPanel
 from app.logging_setup import setup_logging
 from app.pipeline import FactCheckPipeline, PipelineOutcome
+from app.report.exporter import export_html, export_markdown
 from app.report.generator import DISCLAIMER
+from app.storage.db import Database
 
 log = logging.getLogger(__name__)
 
@@ -83,7 +88,13 @@ def _card() -> QFrame:
 
 
 class AnalysisWorker(QThread):
-    """Фоновый запуск pipeline: GUI не блокируется и не падает при ошибках (§50)."""
+    """Фоновый запуск pipeline: GUI не блокируется и не падает при ошибках (§50).
+
+    Поддерживает корректную отмену: cancel() выставляет threading.Event,
+    который pipeline и LLM-провайдер проверяют между этапами и внутри
+    долгих сетевых ожиданий — анализ завершается за доли секунды, а не
+    «вешает» приложение до конца HTTP-таймаута.
+    """
 
     stage_done = Signal(object, str)      # PipelineStage, сообщение
     finished_ok = Signal(object)          # PipelineOutcome
@@ -92,13 +103,24 @@ class AnalysisWorker(QThread):
     def __init__(self, url: str, mode: AnalysisMode, parent=None) -> None:
         super().__init__(parent)
         self.url, self.mode = url, mode
+        self._stop = threading.Event()
+
+    # ------------------------------------------------------------- cancel ---
+    def cancel(self) -> None:
+        """Запросить остановку анализа (безопасно вызывать из GUI-потока)."""
+        self._stop.set()
+
+    def should_stop(self) -> bool:
+        return self._stop.is_set()
 
     def run(self) -> None:  # noqa: D102
         try:
             cfg = get_config()
-            pipe = FactCheckPipeline(cfg)
+            pipe = FactCheckPipeline(cfg, stop_event=self._stop)
             outcome = pipe.run(self.url, self.mode, progress=self._progress)
-            if outcome.error:
+            if self._stop.is_set():
+                self.failed.emit("Анализ остановлен пользователем.")
+            elif outcome.error:
                 self.failed.emit(outcome.error)
             else:
                 self.finished_ok.emit(outcome)
@@ -107,7 +129,8 @@ class AnalysisWorker(QThread):
             self.failed.emit("Непредвиденная ошибка анализа. Подробности — в журнале.")
 
     def _progress(self, stage: PipelineStage, msg: str) -> None:
-        self.stage_done.emit(stage, msg)
+        if not self._stop.is_set():
+            self.stage_done.emit(stage, msg)
 
 
 class ProgressPanel(QWidget):
@@ -157,13 +180,36 @@ class ProgressPanel(QWidget):
 class SummaryView(QWidget):
     """Итоговый экран отчёта (§42, §97)."""
 
-    def __init__(self, on_back, on_open_claim, parent=None) -> None:
+    def __init__(self, on_back, on_open_claim, on_show_graph=None,
+                 on_export=None, parent=None) -> None:
         super().__init__(parent)
         self.on_back = on_back
         self.on_open_claim = on_open_claim
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 10, 14, 10)
         lay.setSpacing(10)
+
+        # панель действий: граф связей + экспорт отчётов
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        btn_graph = QPushButton("🕸 Граф связей")
+        btn_graph.setObjectName("back")
+        if on_show_graph is not None:
+            btn_graph.clicked.connect(on_show_graph)
+        else:
+            btn_graph.setEnabled(False)
+        actions.addWidget(btn_graph)
+        for text, slot in (("⬇ Markdown", "export_md"), ("⬇ HTML", "export_html"),
+                           ("⬇ Граф (HTML)", "export_graph")):
+            b = QPushButton(text)
+            b.setObjectName("back")
+            if on_export is not None:
+                b.clicked.connect(lambda _=False, k=slot: on_export(k))
+            else:
+                b.setEnabled(False)
+            actions.addWidget(b)
+        actions.addStretch(1)
+        lay.addLayout(actions)
 
         self.verdict_lbl = QLabel("")
         self.verdict_lbl.setObjectName("verdict")
